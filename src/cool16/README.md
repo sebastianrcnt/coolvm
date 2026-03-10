@@ -1,966 +1,200 @@
-# cool16 Assembly Guide
+# cool16
 
-This guide is a practical reference for writing assembly for `cool16`.
+`cool16`은 교육용 16비트 RISC ISA와 툴체인(어셈블러/VM/디스어셈블러/CLI)입니다.
 
-It covers:
+이 문서는 기존 `src/specs/cool16.md`의 ISA 설명과 기존 `src/cool16/README.md`의 실사용 가이드를 통합한 버전입니다.
 
-- The machine model
-- The assembly syntax accepted by the current assembler
-- Every base instruction family
-- Supported pseudo-instructions
-- Function calls, stack usage, and common control-flow patterns
-- Running, assembling, and tracing programs with the CLI
+## 설계 철학
 
-For the architectural spec, see [specs/cool16.md](/Users/coolguy/dev/study/coolvm/src/specs/cool16.md).
+- 고정 길이 16비트 명령어
+- Load/Store 아키텍처
+- 조건 코드 레지스터(플래그) 없음
+- 간단한 디코더와 명시적 제어 흐름
 
-## Overview
+의도적으로 제외한 것:
 
-`cool16` is a small 16-bit load/store ISA with:
+- 가변 길이 명령어
+- 지연 슬롯
+- 복잡한 주소 지정 모드
+- 암묵적 스택 엔진
 
-- 8 general registers: `r0` through `r7`
-- 16-bit words
-- 64 KiB address space
-- Fixed 16-bit instructions
-- Byte-addressed memory
-- Little-endian word layout
+## 프로그래머 모델
 
-The current toolchain in `src/cool16` includes:
+### 레지스터
 
-- An assembler
-- A VM / emulator
-- A disassembler
-- A CLI with `run`, `asm`, and `dis`
+아키텍처 레지스터는 8개(`r0`~`r7`)이며 모두 16비트입니다.
 
-## Registers
-
-`cool16` has 8 architectural integer registers:
-
-| Register | Meaning |
+| 레지스터 | 역할 |
 |---|---|
-| `r0` | hardwired zero |
-| `r1` | general purpose / return value by convention |
-| `r2` | general purpose / argument 1 by convention |
-| `r3` | general purpose / argument 2 by convention |
-| `r4` | general purpose / callee-saved by convention |
-| `r5` | general purpose / callee-saved by convention |
-| `r6` | stack pointer |
-| `r7` | link register / return address |
+| `r0` | 고정 0 (읽기=0, 쓰기 무시) |
+| `r1`~`r5` | 일반 목적 |
+| `r6` | `sp`(stack pointer) 관례 |
+| `r7` | `lr`(link register) 관례 |
 
-Assembler aliases:
+추가 별칭:
 
 - `sp` = `r6`
 - `lr` = `r7`
+- 일부 RISC-V 호환 별칭(`x0` 등)도 어셈블러에서 지원
 
-Important rule:
+### 메모리
 
-- Writes to `r0` are ignored.
-- Reads from `r0` always produce `0`.
+- 64KiB 바이트 주소 공간 (`0x0000`~`0xFFFF`)
+- 워드 크기 16비트
+- 리틀 엔디언
+- `LW`/`SW`는 짝수 주소 정렬 필요
+- `LB`/`SB`는 임의 주소 허용
 
-## Memory Model
+## 인코딩 요약
 
-- Address space: `0x0000` to `0xFFFF`
-- Word size: 16 bits
-- Memory is byte-addressed
-- Words are little-endian
-- `LW` and `SW` require even addresses
-- `LB` and `SB` may use any address
+모든 명령어는 16비트입니다.
 
-Misaligned `LW` and `SW` trap.
+- **R 형식**: `op(4) rd(3) rs1(3) rs2(3) func(3)`
+- **I 형식**: `op(4) rd(3) rs1(3) imm6(6)`
+- **M 형식**: `op(4) reg(3) base(3) imm6(6)`
+- **B 형식**: `op(4) rs1(3) rs2(3) imm6(6)`
+- **J 형식**: `op(4) imm12(12)`
 
-## Source File Syntax
+즉시값 규칙:
 
-The assembler is intentionally simple.
+- `ADDI`, 메모리 오프셋, 분기: sign-extend
+- `ANDI/ORI/XORI`: zero-extend
+- 분기/점프 기준 PC는 현재 PC가 아니라 `PC+2`
+- `BEQ/BNE`, `JAL` 오프셋은 내부적으로 1비트 좌시프트된 word-step 오프셋
 
-### Comments
+## ISA
 
-Comments begin with `;`.
+### ALU (R-format, `op=0x0`)
 
-```asm
-ADDI r1, r0, 5   ; load 5
-```
+- `ADD rd, rs1, rs2`
+- `SUB rd, rs1, rs2`
+- `AND rd, rs1, rs2`
+- `OR  rd, rs1, rs2`
+- `XOR rd, rs1, rs2`
+- `SLT rd, rs1, rs2` (signed)
+- `SLTU rd, rs1, rs2` (unsigned)
+- `JALR rd, rs1` (특수 subgroup)
 
-### Labels
+### 즉시값 ALU
 
-Labels end with `:`.
+- `ADDI rd, rs1, imm6`
+- `ANDI rd, rs1, imm6`
+- `ORI  rd, rs1, imm6`
+- `XORI rd, rs1, imm6`
+- `SLLI rd, rs1, imm6`
+- `SRLI rd, rs1, imm6`
+- `SRAI rd, rs1, imm6`
 
-```asm
-start:
-    ADDI r1, r0, 1
-```
+### 메모리
 
-You can put a label on its own line or before an instruction on the same line.
+- `LW rd, off(base)`
+- `SW rs, off(base)`
+- `LB rd, off(base)` (sign-extend load)
+- `SB rs, off(base)`
 
-```asm
-loop: ADDI r1, r1, 1
-```
+### 분기/점프
 
-### Instruction Format
+- `BEQ rs1, rs2, target`
+- `BNE rs1, rs2, target`
+- `JAL target` (link는 `r7`에 저장)
+- `JALR rd, rs1`
 
-Arguments are comma-separated.
+### 시스템
 
-```asm
-ADD  r1, r2, r3
-ADDI r1, r2, -5
-LW   r1, 0(r2)
-BEQ  r1, r2, done
-```
+- `ECALL`, `EBREAK`, `ERET`, `FENCE`
+- `CSRR rd, csr`, `CSRW csr, rs`
 
-### Integer Literals
+CLI 기본 러너(`cool16 run`)의 `ECALL` 처리:
 
-The assembler accepts:
+- `r1=0`: `putchar(r2)` 수행 후 계속 실행
+- 그 외(`r1=1` 포함): 프로그램 halt
 
-- Decimal: `42`, `-5`
-- Hex: `0x2A`
-- Binary: `0b101010`
+## 어셈블리 문법
 
-Examples:
+### 주석
 
-```asm
-ADDI r1, r0, 31
-ADDI r2, r0, -1
-ORI  r3, r0, 0x3F
-ADDI r4, r0, 0b1010
-```
+- `;` 또는 `#` 이후는 주석
 
-### Things the Current Assembler Does Not Support
-
-The current assembler does not implement:
-
-- `.data`, `.text`, `.word`, `.byte`, or other directives
-- String literals
-- Expressions like `label + 4`
-- Arithmetic in immediates like `0x1234 & 0x1F`
-
-If you need data, place it in memory manually from code using stores.
-
-## Instruction Set
-
-## Register-Register ALU
-
-These operate on registers only.
-
-### `ADD rd, rs1, rs2`
+### 레이블
 
 ```asm
-ADD r1, r2, r3
-```
-
-Effect:
-
-```text
-r1 = r2 + r3
-```
-
-### `SUB rd, rs1, rs2`
-
-```asm
-SUB r1, r2, r3
-```
-
-Effect:
-
-```text
-r1 = r2 - r3
-```
-
-Arithmetic wraps modulo 16 bits.
-
-### `AND rd, rs1, rs2`
-
-Bitwise AND.
-
-### `OR rd, rs1, rs2`
-
-Bitwise OR.
-
-### `XOR rd, rs1, rs2`
-
-Bitwise XOR.
-
-### `SLT rd, rs1, rs2`
-
-Signed comparison.
-
-Sets `rd` to `1` if `rs1 < rs2`, else `0`.
-
-### `SLTU rd, rs1, rs2`
-
-Unsigned comparison.
-
-Sets `rd` to `1` if `rs1 < rs2`, else `0`.
-
-### `JALR rd, rs1`
-
-Indirect jump and link.
-
-```asm
-JALR r7, r2
-```
-
-Effect:
-
-```text
-rd = PC + 2
-PC = rs1
-```
-
-Typical uses:
-
-- Returning from a function
-- Jumping through a function pointer
-- Building trampolines or dispatch tables
-
-## Immediate ALU Instructions
-
-## `ADDI rd, rs1, imm6`
-
-Adds a signed 6-bit immediate.
-
-Range:
-
-- `-32` to `31` in the architectural encoding
-
-Examples:
-
-```asm
-ADDI r1, r0, 5
-ADDI r2, r2, -1
-ADDI sp, sp, -2
-```
-
-## `ANDI rd, rs1, imm6`
-
-Bitwise AND with a zero-extended immediate.
-
-```asm
-ANDI r1, r1, 0x3F
-```
-
-## `ORI rd, rs1, imm6`
-
-Bitwise OR with a zero-extended immediate.
-
-```asm
-ORI r1, r1, 0x0F
-```
-
-## `XORI rd, rs1, imm6`
-
-Bitwise XOR with a zero-extended immediate.
-
-```asm
-XORI r1, r1, 1
-```
-
-## Shift Instructions
-
-### `SLLI rd, rs1, imm6`
-
-Logical left shift.
-
-Only the low 4 bits of the immediate are used as the shift amount.
-
-```asm
-SLLI r1, r1, 4
-```
-
-### `SRLI rd, rs1, imm6`
-
-Logical right shift.
-
-```asm
-SRLI r1, r1, 8
-```
-
-### `SRAI rd, rs1, imm6`
-
-Arithmetic right shift.
-
-```asm
-SRAI r1, r1, 2
-```
-
-## Memory Instructions
-
-## `LW rd, off(base)`
-
-Load a 16-bit word from memory.
-
-```asm
-LW r1, 0(sp)
-LW r2, 4(r3)
-```
-
-Rules:
-
-- Effective address = `base + signed offset`
-- Address must be even
-
-## `SW rs, off(base)`
-
-Store a 16-bit word to memory.
-
-```asm
-SW r1, 0(sp)
-SW r2, 4(r3)
-```
-
-Rules:
-
-- Effective address = `base + signed offset`
-- Address must be even
-
-## `LB rd, off(base)`
-
-Load a byte and sign-extend it to 16 bits.
-
-```asm
-LB r1, 0(r2)
-```
-
-If the byte in memory is `0x80`, the result is `0xFF80`.
-
-## `SB rs, off(base)`
-
-Store the low 8 bits of `rs`.
-
-```asm
-SB r1, 1(r2)
-```
-
-## Branches
-
-## `BEQ rs1, rs2, target`
-
-Branch if equal.
-
-```asm
-BEQ r1, r2, done
-```
-
-## `BNE rs1, rs2, target`
-
-Branch if not equal.
-
-```asm
-BNE r1, r2, loop
-```
-
-Branch targets may be:
-
-- A label
-- A raw immediate offset
-
-In normal code, use labels.
-
-### Important Branch Rule
-
-Branches are relative to `PC + 2`, not the current `PC`.
-
-The assembler handles this automatically for labels.
-
-### Unconditional Short Jump
-
-Use:
-
-```asm
-BEQ r0, r0, target
-```
-
-This preserves `r7`, unlike `JMP`.
-
-## Jumps and Calls
-
-## `JAL target`
-
-Jump and link.
-
-```asm
-JAL func
-```
-
-Effect:
-
-```text
-r7 = PC + 2
-PC = target
-```
-
-Use it for function calls.
-
-## System Instructions
-
-## `ECALL`
-
-Raises an environment call trap.
-
-In the current CLI runner, the VM’s default `ECALL` handler halts execution.
-
-That means simple programs usually end with:
-
-```asm
-ECALL
-```
-
-## `EBREAK`
-
-Raises a breakpoint trap.
-
-## `ERET`
-
-Return from an exception.
-
-Normally only used by trap handlers in supervisor mode.
-
-## `FENCE`
-
-Architectural no-op in the current simple VM.
-
-## `CSRR rd, csr`
-
-Read a CSR into a register.
-
-```asm
-CSRR r1, 0x04
-```
-
-## `CSRW csr, rs`
-
-Write a register to a CSR.
-
-```asm
-CSRW 0x04, r1
-```
-
-These are privileged operations in the machine model.
-
-## Supported Pseudo-Instructions
-
-These are assembler conveniences. They expand into one or more base instructions.
-
-## `NOP`
-
-Does nothing.
-
-```asm
-NOP
-```
-
-Equivalent to:
-
-```asm
-ADD r0, r0, r0
-```
-
-## `MOV rd, rs`
-
-Copy a register.
-
-```asm
-MOV r2, r1
-```
-
-Equivalent to:
-
-```asm
-ADD r2, r1, r0
-```
-
-## `NEG rd, rs`
-
-Two’s-complement negate.
-
-```asm
-NEG r2, r1
-```
-
-Equivalent to:
-
-```asm
-SUB r2, r0, r1
-```
-
-## `NOT rd, rs`
-
-Bitwise invert all 16 bits.
-
-```asm
-NOT r2, r1
-```
-
-The current assembler expands this as a short sequence, not a single base instruction.
-
-## `RET`
-
-Return from a function.
-
-```asm
-RET
-```
-
-Equivalent to:
-
-```asm
-JALR r0, r7
-```
-
-## `JR rs`
-
-Jump to a register without linking.
-
-```asm
-JR r2
-```
-
-Equivalent to:
-
-```asm
-JALR r0, r2
-```
-
-## `LI rd, imm`
-
-Load an integer constant.
-
-```asm
-LI r1, 15
-LI r2, 0xABCD
-```
-
-Behavior:
-
-- Small values in `-32..31` assemble as one `ADDI`
-- Larger 16-bit values expand to a multi-instruction sequence
-
-This is the preferred way to load constants.
-
-## `SUBI rd, rs, imm`
-
-Subtract an immediate.
-
-```asm
-SUBI r1, r1, 1
-```
-
-Equivalent to:
-
-```asm
-ADDI r1, r1, -1
-```
-
-## `SEQZ rd, rs`
-
-Set if equal to zero.
-
-```asm
-SEQZ r2, r1
-```
-
-Result:
-
-- `r2 = 1` if `r1 == 0`
-- `r2 = 0` otherwise
-
-## `SNEZ rd, rs`
-
-Set if not equal to zero.
-
-```asm
-SNEZ r2, r1
-```
-
-Result:
-
-- `r2 = 1` if `r1 != 0`
-- `r2 = 0` otherwise
-
-## `PUSH rs`
-
-Push a word on the stack.
-
-```asm
-PUSH r1
-```
-
-Equivalent to:
-
-```asm
-ADDI sp, sp, -2
-SW   r1, 0(sp)
-```
-
-## `POP rd`
-
-Pop a word from the stack.
-
-```asm
-POP r1
-```
-
-Equivalent to:
-
-```asm
-LW   r1, 0(sp)
-ADDI sp, sp, 2
-```
-
-## `CALL label`
-
-Pseudo for `JAL`.
-
-```asm
-CALL func
-```
-
-## `JMP label`
-
-Pseudo for `JAL`.
-
-```asm
-JMP somewhere
-```
-
-Important:
-
-- `JMP` clobbers `r7`
-- Prefer `BEQ r0, r0, label` for short unconditional jumps when preserving `r7` matters
-
-## Arithmetic and Boolean Patterns
-
-## Add Two Numbers
-
-```asm
-ADD r1, r2, r3
-```
-
-## Subtract One
-
-```asm
-SUBI r1, r1, 1
-```
-
-## Multiply by 16
-
-```asm
-SLLI r1, r1, 4
-```
-
-## Test for Zero
-
-```asm
-SEQZ r2, r1
-```
-
-## Test for Nonzero
-
-```asm
-SNEZ r2, r1
-```
-
-## Branching Patterns
-
-## If / Else
-
-```asm
-    ; if (r1 == r2) goto equal
-    BEQ r1, r2, equal
-
-    ; else path
-    ADDI r3, r0, 0
-    BEQ  r0, r0, done
-
-equal:
-    ADDI r3, r0, 1
-
-done:
-    ECALL
-```
-
-## Counted Loop
-
-```asm
-    ADDI r1, r0, 0      ; i = 0
-    ADDI r2, r0, 10     ; limit = 10
-
 loop:
-    BEQ  r1, r2, done
-    ADDI r1, r1, 1
-    BEQ  r0, r0, loop
-
-done:
-    ECALL
+  ADDI r1, r1, 1
 ```
 
-## Signed Less-Than Branch
+로컬 레이블(`.loop`)을 지원하며 최근 글로벌 레이블 스코프에 바인딩됩니다.
 
-There is no direct `BLT`. Build it with `SLT` + branch.
+### 리터럴
 
-```asm
-    SLT  r5, r1, r2
-    BNE  r5, r0, less
-```
+- 10진: `42`, `-7`
+- 16진: `0x2A`
+- 2진: `0b101010`
 
-## Unsigned Less-Than Branch
+### 데이터/상수 지시어
 
-```asm
-    SLTU r5, r1, r2
-    BNE  r5, r0, less
-```
+- `.equ NAME, value`
+- `.byte b0, b1, ...`
+- `.ascii "text\n\0"`
 
-## Functions and Calling Convention
+`.byte`/`.ascii`는 바이트 단위를 리틀엔디언 워드로 패킹하며, 홀수 바이트면 0으로 패딩됩니다.
 
-The conventional calling convention is:
+## 지원하는 의사 명령어
 
-| Register | Role |
-|---|---|
-| `r1` | return value |
-| `r2`, `r3` | arguments / caller-saved |
-| `r4`, `r5` | callee-saved |
-| `sp` / `r6` | stack pointer |
-| `lr` / `r7` | link register |
+- `NOP` -> `ADD r0, r0, r0`
+- `MOV rd, rs` (`MV` 별칭 포함)
+- `NEG rd, rs`
+- `NOT rd, rs`
+- `RET` -> `JALR r0, r7`
+- `JR rs` -> `JALR r0, rs`
+- `J label` -> `JMP label`
+- `BEQZ rs, label` -> `BEQ rs, r0, label`
+- `BNEZ rs, label` -> `BNE rs, r0, label`
+- `SEQZ rd, rs`
+- `LI rd, imm16/label` (필요 시 여러 명령으로 확장)
+- `PUSH rs`, `POP rd`
 
-### Simple Leaf Function
-
-```asm
-    ADDI r2, r0, 3
-    CALL double
-    ECALL
-
-double:
-    ADD  r1, r2, r2
-    RET
-```
-
-### Function with Stack Save/Restore
-
-```asm
-    LI   sp, 0x0040
-    ADDI r2, r0, 3
-    CALL double
-    ECALL
-
-double:
-    PUSH lr
-    ADD  r1, r2, r2
-    POP  lr
-    RET
-```
-
-### Saving Callee-Saved Registers
-
-If your function modifies `r4` or `r5`, save and restore them.
-
-```asm
-func:
-    PUSH lr
-    PUSH r4
-
-    ; body
-    ADDI r4, r0, 1
-
-    POP  r4
-    POP  lr
-    RET
-```
-
-## Working with Memory
-
-Because there are no data directives yet, most examples build state in memory manually.
-
-### Store and Reload a Word
-
-```asm
-    LI   r1, 0x1234
-    LI   r2, 0x0020
-    SW   r1, 0(r2)
-    LW   r3, 0(r2)
-    ECALL
-```
-
-### Store and Reload a Byte
-
-```asm
-    ADDI r1, r0, 25
-    LI   r2, 0x0020
-    SB   r1, 0(r2)
-    LB   r3, 0(r2)
-    ECALL
-```
-
-## Complete Example: Fibonacci
-
-```asm
-        ADDI r2, r0, 0
-        ADDI r1, r0, 1
-        ADDI r3, r0, 10
-        ADDI r4, r0, 0
-
-loop:
-        BEQ  r4, r3, done
-        ADD  r5, r1, r2
-        MOV  r2, r1
-        MOV  r1, r5
-        ADDI r4, r4, 1
-        BEQ  r0, r0, loop
-
-done:
-        ECALL
-```
-
-After execution, `r1` contains `89`.
-
-## Running Programs
-
-Use the CLI in `src/cool16/cli.ts`.
-
-## Run a Program
+## CLI 사용법
 
 ```bash
-bun run src/cool16/cli.ts run program.asm
+bun src/cool16/cli.ts run <file.asm>
+bun src/cool16/cli.ts asm <file.asm>
+bun src/cool16/cli.ts dis <file.bin>
 ```
 
-## Run with Trace Output
+옵션:
+
+- `--trace`
+- `--max-cycles <n>`
+
+## 샘플 프로그램
+
+### `samples/hello.asm`
+
+문자열을 `.ascii`로 배치하고 `ECALL putchar(r1=0)`로 문자 단위 출력:
 
 ```bash
-bun run src/cool16/cli.ts run --trace program.asm
+bun src/cool16/cli.ts run src/cool16/samples/hello.asm
 ```
 
-This prints:
-
-- The address
-- The raw instruction word
-- The disassembled instruction
-
-## Assemble to Hex Listing
-
-```bash
-bun run src/cool16/cli.ts asm program.asm
-```
-
-## Disassemble a Binary File
-
-```bash
-bun run src/cool16/cli.ts dis program.bin
-```
-
-## Debugging Tips
-
-## Start Small
-
-Write tiny programs first:
-
-- load a constant
-- do one arithmetic instruction
-- branch once
-- terminate with `ECALL`
-
-## End Test Programs with `ECALL`
-
-The CLI runner treats `ECALL` as the normal stop instruction for small user programs.
-
-## Prefer `LI` for Constants
-
-Use `LI` instead of hand-rolling constant-load sequences unless you are studying encodings.
-
-## Use `MOV` for Clarity
-
-These are equivalent:
-
-```asm
-MOV r2, r1
-ADD r2, r1, r0
-```
-
-`MOV` is clearer.
-
-## Be Careful with `JMP`
-
-`JMP` is implemented as `JAL`, so it overwrites `lr`.
-
-If you want an unconditional branch and need to preserve `lr`, use:
-
-```asm
-BEQ r0, r0, target
-```
-
-## Keep the Stack Aligned
-
-Push and pop words in 2-byte units:
-
-- subtract `2` when pushing
-- add `2` when popping
-
-## Common Mistakes
-
-## Using Odd Addresses with `LW` or `SW`
-
-This traps.
-
-Bad:
-
-```asm
-ADDI r2, r0, 0x21
-LW   r1, 0(r2)
-```
-
-## Expecting `r0` to Change
-
-This does not work:
-
-```asm
-ADDI r0, r0, 5
-```
-
-`r0` remains zero.
-
-## Forgetting That `LB` Sign-Extends
-
-`LB` loads signed bytes. If you need to reason about raw byte values, remember that `0x80` becomes `0xFF80`.
-
-## Forgetting That Branches and Jumps Are PC-Relative
-
-Use labels. Let the assembler compute the offsets.
-
-## Expecting Data Directives
-
-Right now, the assembler is code-only. There is no `.word` or `.byte` support yet.
-
-## Quick Reference
-
-### Base instructions
+예상 출력:
 
 ```text
-ADD   SUB   AND   OR    XOR   SLT   SLTU   JALR
-ADDI  ANDI  ORI   XORI  SLLI  SRLI  SRAI
-LW    SW    LB    SB
-BEQ   BNE
-JAL
-ECALL EBREAK ERET FENCE CSRR CSRW
+Hello, World!
 ```
 
-### Supported pseudo-instructions
+### `samples/fibonacci.asm`
 
-```text
-NOP   MOV   NEG   NOT   RET   JR
-LI    SUBI  SEQZ  SNEZ
-PUSH  POP
-CALL  JMP
+반복문으로 `fib(N)` 계산 후 `ECALL exit(r1=1)`로 종료.
+기본 `N=10`이면 결과는 `55`이며 실행 후 레지스터 덤프의 `r2`(exit 인자)에서 확인 가능합니다.
+
+```bash
+bun src/cool16/cli.ts run src/cool16/samples/fibonacci.asm
 ```
 
-### Register aliases
+## 구현 위치
 
-```text
-sp = r6
-lr = r7
-```
-
-## Recommended Style
-
-- Use labels for all control flow
-- Use `LI` for constants
-- Use `MOV` / `RET` / `PUSH` / `POP` for readability
-- Preserve `lr` in non-leaf functions
-- Preserve `r4` and `r5` in callees if you modify them
-- End standalone programs with `ECALL`
-
-That is enough to write real programs in `cool16` assembly today.
+- ISA/VM 코어: `src/cool16/core.ts`
+- 어셈블러: `src/cool16/assembler.ts`
+- 디스어셈블러: `src/cool16/disassembler.ts`
+- CLI: `src/cool16/cli.ts`
+- 샘플: `src/cool16/samples/*.asm`

@@ -1,64 +1,44 @@
-; fibonacci.asm — compute the Nth Fibonacci number
+; fibonacci.asm — compute fib(N) iteratively and exit with that value
 ;
-; Input:  r2 = N (which Fibonacci number to compute, 0-indexed)
-; Output: r1 = fib(N)
+; Input:  .equ N sets the desired index (0-indexed)
+; Output: program exits with code fib(N) (exit argument r2)
 ;
-; fib(0)=0, fib(1)=1, fib(2)=1, fib(3)=2, ..., fib(10)=55
-;
-; ECALL convention:
-;   r1 = syscall number  (1 = exit with value in r2)
-;   r2 = argument
-;
-; Usage: set r2 before jumping to fib, result in r1 after RET.
-; This file runs standalone with N=10.
+; Examples: fib(0)=0, fib(1)=1, fib(2)=1, fib(10)=55
 
 .equ N, 10
+.equ EXIT, 1
 
-        ; --- entry: compute fib(N) ---
         ADDI r2, r0, N
         JAL  fib
-        ; result is in r1
 
-        ; syscall 1 = exit(r1)
+        ; syscall 1 = exit(r2)
         MOV  r2, r1
-        ADDI r1, r0, 1
+        ADDI r1, r0, EXIT
         ECALL
 
-; -------------------------------------------------------------------
-; fib(N) — iterative Fibonacci
-;
-; Arguments:  r2 = N
-; Returns:    r1 = fib(N)
-; Clobbers:   r3, r4, r5
-; Preserves:  r6 (sp), r7 (lr)
-; -------------------------------------------------------------------
+; fib(N)
+;   arg: r2 = N
+;   ret: r1 = fib(N)
+; clobbers: r3, r4, r5
 fib:
-        ; handle base cases: fib(0)=0, fib(1)=1
-        BEQ  r2, r0, .base0         ; if N == 0, return 0
-        ADDI r3, r0, 1
-        BEQ  r2, r3, .base1         ; if N == 1, return 1
+        BEQ  r2, r0, .base0       ; if N == 0 -> 0
 
-        ; iterative loop:  a=0, b=1, i=2
-        ADDI r3, r0, 0              ; r3 = a (fib(i-2))
-        ADDI r4, r0, 1              ; r4 = b (fib(i-1))
-        ADDI r5, r0, 1              ; r5 = i
+        ADDI r3, r0, 0            ; a = 0
+        ADDI r4, r0, 1            ; b = 1
+        ADDI r5, r0, 1            ; i = 1
 
 .loop:
-        BEQ  r5, r2, .done          ; if i == N, done
-        ADD  r1, r3, r4             ; r1 = a + b
-        MOV  r3, r4                 ; a = b
-        MOV  r4, r1                 ; b = a+b
-        ADDI r5, r5, 1              ; i++
+        BEQ  r5, r2, .done        ; when i == N, b is fib(N)
+        ADD  r1, r3, r4           ; t = a + b
+        MOV  r3, r4               ; a = b
+        MOV  r4, r1               ; b = t
+        ADDI r5, r5, 1            ; i++
         BEQ  r0, r0, .loop
 
 .done:
-        MOV  r1, r4                 ; return b
-        JALR r0, r7
+        MOV  r1, r4
+        RET
 
 .base0:
-        MOV  r1, r0                 ; return 0
-        JALR r0, r7
-
-.base1:
-        ADDI r1, r0, 1              ; return 1
-        JALR r0, r7
+        MOV  r1, r0
+        RET
