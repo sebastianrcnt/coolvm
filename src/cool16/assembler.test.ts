@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { assemble, assembleLine, tokenizeLine } from "./assembler";
+import { assemble, assembleLine, tokenizeLine, parseStringLiteral } from "./assembler";
 
 describe("assembler basics", () => {
   test("tokenizeLine exports label, mnemonic, and args", () => {
@@ -357,5 +357,238 @@ describe("register aliases", () => {
     const withAlias = assemble("JALR r0, lr");
     const withReg   = assemble("JALR r0, r7");
     expect(withAlias.program[0]).toBe(withReg.program[0]);
+  });
+});
+
+describe("pass 1 address calculation", () => {
+  test("PUSH (4 bytes) correctly offsets following label", () => {
+    const result = assemble(`
+      PUSH r1
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("after")).toBe(4);
+  });
+
+  test("POP (4 bytes) correctly offsets following label", () => {
+    const result = assemble(`
+      POP r1
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("after")).toBe(4);
+  });
+
+  test("NOT (4 bytes) correctly offsets following label", () => {
+    const result = assemble(`
+      NOT r1, r2
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("after")).toBe(4);
+  });
+
+  test("LI large (10 bytes) correctly offsets following label", () => {
+    const result = assemble(`
+      LI r1, 0xABCD
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("after")).toBe(10);
+  });
+
+  test("LI small (2 bytes) correctly offsets following label", () => {
+    const result = assemble(`
+      LI r1, 5
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("after")).toBe(2);
+  });
+});
+
+describe(".equ directive", () => {
+  test(".equ defines a named constant usable in ADDI", () => {
+    const result = assemble(`
+      .equ N, 10
+      ADDI r1, r0, N
+    `);
+    expect(result.errors.length).toBe(0);
+    // N=10, same as ADDI r1, r0, 10
+    expect(result.program[0]).toBe(assemble("ADDI r1, r0, 10").program[0]);
+  });
+
+  test(".equ with hex value", () => {
+    const result = assemble(`
+      .equ MASK, 0x3F
+      ADDI r1, r0, MASK
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program[0]).toBe(0b0001_001_000_111111);
+  });
+
+  test(".equ does not contribute to program size", () => {
+    const result = assemble(`
+      .equ X, 5
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(1);
+  });
+
+  test(".equ constant usable in LI", () => {
+    const result = assemble(`
+      .equ STACK, 0xFE00
+      LI r6, STACK
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(5); // large LI expands to 5 words
+  });
+});
+
+describe(".byte directive", () => {
+  test(".byte emits byte pairs as little-endian u16 words", () => {
+    const result = assemble(".byte 0x48, 0x65, 0x6C, 0x6C");
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(2);
+    expect(result.program[0]).toBe(0x6548); // 0x48 lo, 0x65 hi
+    expect(result.program[1]).toBe(0x6C6C);
+  });
+
+  test(".byte with odd count pads with 0x00", () => {
+    const result = assemble(".byte 0x41, 0x42, 0x43");
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(2);
+    expect(result.program[0]).toBe(0x4241); // 'A' lo, 'B' hi
+    expect(result.program[1]).toBe(0x0043); // 'C' lo, 0x00 hi
+  });
+
+  test(".byte label address is correct", () => {
+    const result = assemble(`
+      NOP
+    data:
+      .byte 0x01, 0x02
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("data")).toBe(2);
+    expect(result.labels.get("after")).toBe(4);
+  });
+});
+
+describe(".ascii directive", () => {
+  test("parseStringLiteral handles basic string", () => {
+    expect(parseStringLiteral('"AB"')).toEqual([0x41, 0x42]);
+  });
+
+  test("parseStringLiteral handles escape sequences", () => {
+    expect(parseStringLiteral('"\\n\\t\\r\\0\\\\"')).toEqual([10, 9, 13, 0, 92]);
+  });
+
+  test(".ascii emits string bytes as little-endian u16 words", () => {
+    const result = assemble('.ascii "AB"');
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(1);
+    expect(result.program[0]).toBe(0x4241); // 'A'=0x41 lo, 'B'=0x42 hi
+  });
+
+  test(".ascii pads odd-length strings with 0x00", () => {
+    const result = assemble('.ascii "A"');
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(1);
+    expect(result.program[0]).toBe(0x0041); // 'A' lo, 0x00 hi
+  });
+
+  test(".ascii handles escape sequences", () => {
+    const result = assemble('.ascii "\\n\\0"');
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(1);
+    expect(result.program[0]).toBe(0x000A); // 0x0A lo, 0x00 hi
+  });
+
+  test(".ascii with comma in string assembles correctly", () => {
+    const result = assemble('.ascii "A,B"');
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(2); // 3 bytes → padded to 4 = 2 words
+  });
+
+  test(".ascii label address accounts for string size", () => {
+    const result = assemble(`
+      NOP
+    str:
+      .ascii "ABCD"
+    after:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("str")).toBe(2);
+    expect(result.labels.get("after")).toBe(6); // 2 + 4 bytes = 6
+  });
+});
+
+describe("local label scoping", () => {
+  test("dot labels are scoped to nearest global label", () => {
+    const result = assemble(`
+    foo:
+    .inner:
+      NOP
+    bar:
+    .inner:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("foo.inner")).toBe(0);
+    expect(result.labels.get("bar.inner")).toBe(2);
+  });
+
+  test("local label references resolve within their scope", () => {
+    const result = assemble(`
+    loop:
+    .start:
+      NOP
+      BEQ r0, r0, .start
+    `);
+    expect(result.errors.length).toBe(0);
+    // .start is at addr 0, BEQ is at addr 2
+    // offset = (0 - (2+2)) >> 1 = -2, which is 0b111110 in 6-bit
+    const imm6 = result.program[1] & 0x3F;
+    expect(imm6).toBe(0b111110);
+  });
+
+  test("same local label name in different scopes does not collide", () => {
+    const result = assemble(`
+    a:
+    .end:
+      NOP
+    b:
+    .end:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.labels.get("a.end")).toBe(0);
+    expect(result.labels.get("b.end")).toBe(2);
+  });
+
+  test("fibonacci-style local labels all resolve correctly", () => {
+    const result = assemble(`
+    fib:
+      BEQ r0, r0, .done
+    .loop:
+      NOP
+      BEQ r0, r0, .loop
+    .done:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    // BEQ at addr 0 → .done at addr 6, offset = (6-(0+2))>>1 = 2
+    expect(result.program[0] & 0x3F).toBe(2);
+    // BEQ at addr 4 → .loop at addr 2, offset = (2-(4+2))>>1 = -2 = 0b111110
+    expect(result.program[2] & 0x3F).toBe(0b111110);
   });
 });

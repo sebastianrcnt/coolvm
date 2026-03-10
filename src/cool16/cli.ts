@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // cool16 CLI — assemble and run cool16 programs
 
-import { Cool16 } from "./core";
+import { Cool16, Csr } from "./core";
 import { assemble } from "./assembler";
 import { disassemble } from "./disassembler";
 
@@ -49,7 +49,17 @@ async function main() {
 
       const vm = new Cool16();
       vm.load(result.program);
-      vm.onEcall = (v) => { v.halted = true; };
+      vm.onEcall = (v) => {
+        const syscall = v.regs[1];
+        if (syscall === 0) {
+          // putchar(r2): write low byte to stdout, then resume after ECALL
+          process.stdout.write(Buffer.from([v.regs[2] & 0xFF]));
+          v.pc = (v.csrs[Csr.EPC] + 2) & 0xFFFF;
+        } else {
+          // exit(r2) or any unrecognized syscall: halt
+          v.halted = true;
+        }
+      };
 
       if (trace) {
         const startCycles = vm.cycles;

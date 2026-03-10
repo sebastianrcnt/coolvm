@@ -44,6 +44,22 @@ function parseImm(token: string): number | null {
   return isNaN(v) ? null : v;
 }
 
+// Resolve an immediate: check constants map, then labels map, then parse as number.
+function resolveImm(
+  token: string,
+  constants: Map<string, number>,
+  labels?: Map<string, number>,
+): number | null {
+  const t = token.trim();
+  const c = constants.get(t);
+  if (c !== undefined) return c;
+  if (labels) {
+    const l = labels.get(t);
+    if (l !== undefined) return l;
+  }
+  return parseImm(t);
+}
+
 function toU16(value: number): number {
   return value & 0xFFFF;
 }
@@ -85,6 +101,92 @@ function encodeSys(sub: number, reg = 0, csr = 0): number {
   return (Op.SYS << 12) | (sub << 9) | (reg << 6) | (csr & 0x3F);
 }
 
+// --- String literal parsing ---
+
+// Parses a quoted string literal (e.g. `"Hello\n\0"`) into a byte array.
+// Supports escape sequences: \n, \t, \r, \0, \\, \"
+export function parseStringLiteral(token: string): number[] {
+  const inner = token.trim();
+  if (!inner.startsWith('"') || !inner.endsWith('"')) return [];
+  const s = inner.slice(1, -1);
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      switch (s[i + 1]) {
+        case "n":  bytes.push(10); break;
+        case "t":  bytes.push(9);  break;
+        case "r":  bytes.push(13); break;
+        case "0":  bytes.push(0);  break;
+        case "\\": bytes.push(92); break;
+        case '"':  bytes.push(34); break;
+        default:   bytes.push(s.charCodeAt(i + 1)); break;
+      }
+      i += 2;
+    } else {
+      bytes.push(s.charCodeAt(i));
+      i++;
+    }
+  }
+  return bytes;
+}
+
+// --- Byte count estimation for pass 1 ---
+
+// Returns the number of bytes an instruction or directive will emit.
+function instrByteCount(mnemonic: string, args: string[]): number {
+  switch (mnemonic) {
+    case "NOT": case "SEQZ": case "PUSH": case "POP":
+      return 4;
+    case "LI": {
+      if (args.length >= 2) {
+        const imm = parseImm(args[1]);
+        if (imm !== null && imm >= -32 && imm <= 31) return 2;
+      }
+      return 10;
+    }
+    case ".BYTE":
+      return Math.ceil(args.length / 2) * 2;
+    case ".ASCII": {
+      const str = args.join(","); // rejoin in case string was split on commas
+      const bytes = parseStringLiteral(str);
+      return Math.ceil(bytes.length / 2) * 2;
+    }
+    default:
+      return 2;
+  }
+}
+
+// --- Data directive encoding ---
+
+// Encodes .byte or .ascii directives into u16 word arrays (little-endian pairs).
+function encodeData(mnemonic: string, args: string[]): { words: number[]; error?: string } {
+  const bytes: number[] = [];
+
+  if (mnemonic === ".BYTE") {
+    for (const arg of args) {
+      const v = parseImm(arg.trim());
+      if (v === null) return { words: [], error: `invalid byte value: ${arg}` };
+      bytes.push(v & 0xFF);
+    }
+  } else if (mnemonic === ".ASCII") {
+    const str = args.join(","); // rejoin in case string was split on commas
+    const parsed = parseStringLiteral(str);
+    bytes.push(...parsed);
+  } else {
+    return { words: [], error: `unknown data directive: ${mnemonic}` };
+  }
+
+  // Pack bytes as little-endian u16 words, padding with 0x00 if odd
+  const words: number[] = [];
+  for (let i = 0; i < bytes.length; i += 2) {
+    const lo = bytes[i];
+    const hi = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    words.push((hi << 8) | lo);
+  }
+  return { words };
+}
+
 // --- Tokenizer ---
 
 export function tokenizeLine(raw: string): { label: string | null; mnemonic: string | null; args: string[] } {
@@ -108,7 +210,25 @@ export function tokenizeLine(raw: string): { label: string | null; mnemonic: str
   const parts = rest.split(/\s+/);
   const mnemonic = parts[0].toUpperCase();
   const argStr = parts.slice(1).join(" ");
-  const args = argStr ? argStr.split(",").map((a) => a.trim()) : [];
+
+  // Split args on commas, but not inside quoted strings
+  const args: string[] = [];
+  if (argStr) {
+    let current = "";
+    let inQuote = false;
+    for (const ch of argStr) {
+      if (ch === '"') {
+        inQuote = !inQuote;
+        current += ch;
+      } else if (ch === "," && !inQuote) {
+        args.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) args.push(current.trim());
+  }
 
   return { label, mnemonic, args };
 }
@@ -118,6 +238,7 @@ export function assembleLine(
   args: string[],
   addr: number,
   labels: Map<string, number>,
+  constants: Map<string, number> = new Map(),
 ): { words: number[]; error?: string } {
   const words: number[] = [];
   const emit = (word: number) => words.push(word & 0xFFFF);
@@ -171,7 +292,7 @@ export function assembleLine(
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
       const rd  = parseReg(args[0]);
       const rs1 = parseReg(args[1]);
-      const imm = parseImm(args[2]);
+      const imm = resolveImm(args[2], constants);
       if (rd === null || rs1 === null || imm === null) return fail("invalid operand");
       const opMap: Record<string, number> = {
         ADDI: Op.ADDI, ANDI: Op.ANDI, ORI: Op.ORI, XORI: Op.XORI,
@@ -225,7 +346,7 @@ export function assembleLine(
     case "CSRR": {
       if (args.length !== 2) return fail("CSRR expects 2 args");
       const rd  = parseReg(args[0]);
-      const csr = parseImm(args[1]);
+      const csr = resolveImm(args[1], constants);
       if (rd === null || csr === null) return fail("invalid operand");
       emit(encodeSys(Sys.CSRR, rd, csr));
       break;
@@ -233,7 +354,7 @@ export function assembleLine(
 
     case "CSRW": {
       if (args.length !== 2) return fail("CSRW expects 2 args");
-      const csr = parseImm(args[0]);
+      const csr = resolveImm(args[0], constants);
       const rs  = parseReg(args[1]);
       if (csr === null || rs === null) return fail("invalid operand");
       emit(encodeSys(Sys.CSRW, rs, csr));
@@ -282,7 +403,7 @@ export function assembleLine(
       if (args.length !== 3) return fail("SUBI expects 3 args");
       const rd = parseReg(args[0]);
       const rs = parseReg(args[1]);
-      const imm = parseImm(args[2]);
+      const imm = resolveImm(args[2], constants);
       if (rd === null || rs === null || imm === null) return fail("invalid operand");
       emit(encodeI(Op.ADDI, rd, rs, -imm));
       break;
@@ -332,9 +453,13 @@ export function assembleLine(
     case "LI": {
       if (args.length !== 2) return fail("LI expects 2 args");
       const rd  = parseReg(args[0]);
-      const imm = parseImm(args[1]);
+      const imm = resolveImm(args[1], constants, labels);
       if (rd === null || imm === null) return fail("invalid operand");
-      if (imm >= -32 && imm <= 31) {
+      // Short form only when arg is a numeric literal in range.
+      // Symbolic args (labels/constants) always use the large 5-instruction form
+      // so that pass 1 byte-count estimation (which also can't resolve symbols) stays consistent.
+      const isNumericLiteral = parseImm(args[1]) !== null;
+      if (isNumericLiteral && imm >= -32 && imm <= 31) {
         emit(encodeI(Op.ADDI, rd, 0, imm));
         break;
       }
@@ -364,39 +489,79 @@ export function assemble(source: string): AssembleResult {
   const lines = source.split("\n");
   const errors: AssembleError[] = [];
   const labels = new Map<string, number>();
+  const constants = new Map<string, number>();
   const instructions: Array<{
     lineNum: number;
     mnemonic: string;
     args: string[];
+    isData: boolean;
+    prefix: string; // current global label prefix at time of this instruction
   }> = [];
 
-  // --- Pass 1: collect labels, count instructions ---
+  // --- Pass 1: collect labels and constants, compute addresses ---
   let addr = 0;
+  let currentPrefix = "";
+
   for (let i = 0; i < lines.length; i++) {
     const { label, mnemonic, args } = tokenizeLine(lines[i]);
-    if (label) {
-      if (labels.has(label)) {
-        errors.push({ line: i + 1, message: `duplicate label: ${label}` });
+
+    if (label !== null) {
+      const isLocal = label.startsWith(".");
+      const fullLabel = isLocal ? `${currentPrefix}${label}` : label;
+      if (!isLocal) currentPrefix = label;
+
+      if (labels.has(fullLabel)) {
+        errors.push({ line: i + 1, message: `duplicate label: ${fullLabel}` });
       } else {
-        labels.set(label, addr);
+        labels.set(fullLabel, addr);
       }
     }
+
     if (mnemonic) {
-      instructions.push({ lineNum: i + 1, mnemonic, args });
-      addr += 2;
+      if (mnemonic === ".EQU") {
+        // .equ NAME, value — store constant, no address increment
+        if (args.length === 2) {
+          const val = parseImm(args[1].trim());
+          if (val !== null) {
+            constants.set(args[0].trim(), val);
+          } else {
+            errors.push({ line: i + 1, message: `invalid constant value: ${args[1]}` });
+          }
+        } else {
+          errors.push({ line: i + 1, message: ".equ expects NAME, value" });
+        }
+      } else {
+        const isData = mnemonic === ".BYTE" || mnemonic === ".ASCII";
+        instructions.push({ lineNum: i + 1, mnemonic, args, isData, prefix: currentPrefix });
+        addr += instrByteCount(mnemonic, args);
+      }
     }
   }
 
   // --- Pass 2: encode instructions ---
   const words: number[] = [];
 
-  for (const { lineNum, mnemonic, args } of instructions) {
+  for (const { lineNum, mnemonic, args, isData, prefix } of instructions) {
     const currentAddr = words.length * 2;
-    const result = assembleLine(mnemonic, args, currentAddr, labels);
-    if (result.error) {
-      errors.push({ line: lineNum, message: result.error });
+
+    // Expand local label references in args (e.g. ".loop" → "fib.loop")
+    const expandedArgs = args.map((arg) =>
+      arg.startsWith(".") ? `${prefix}${arg}` : arg,
+    );
+
+    if (isData) {
+      const result = encodeData(mnemonic, expandedArgs);
+      if (result.error) {
+        errors.push({ line: lineNum, message: result.error });
+      }
+      words.push(...result.words.map((w) => w & 0xFFFF));
+    } else {
+      const result = assembleLine(mnemonic, expandedArgs, currentAddr, labels, constants);
+      if (result.error) {
+        errors.push({ line: lineNum, message: result.error });
+      }
+      words.push(...result.words.map((w) => w & 0xFFFF));
     }
-    words.push(...result.words.map((word) => word & 0xFFFF));
   }
 
   return {
