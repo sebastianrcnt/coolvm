@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { Cool16, Csr, Cause } from "./core";
+import { Cool16, Csr, Cause, UartMmio } from "./core";
 import { assemble } from "./assembler";
 
 /** Helper: assemble source, load into a fresh VM, return the VM. */
@@ -317,6 +317,49 @@ describe("memory operations", () => {
     cpu.onEcall = () => {};
     cpu.run(10);
     expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.MISALIGNED_ACCESS);
+  });
+
+  test("MMIO UART TXDATA emits after baud-div timed cycles", () => {
+    const cpu = vm(`
+      ADDI r2, r0, 3
+      SW   r2, 6(r1)
+      SB   r3, 0(r1)
+    spin:
+      BEQ  r0, r0, spin
+    `);
+    cpu.regs[1] = UartMmio.BASE;
+    cpu.regs[3] = 65;
+
+    const sent: number[] = [];
+    cpu.onUartTxByte = (value) => {
+      sent.push(value);
+    };
+
+    cpu.run(4);
+    expect(sent).toEqual([]);
+
+    cpu.run(27);
+    expect(sent).toEqual([]);
+
+    cpu.run(1);
+    expect(sent).toEqual([65]);
+  });
+
+  test("MMIO UART RXDATA clears RX-valid bit on read", () => {
+    const cpu = vm(`
+      LI   r1, 0xFF00
+      LB   r2, 4(r1)
+      LB   r3, 2(r1)
+      LB   r4, 4(r1)
+      ECALL
+    `);
+
+    cpu.uartReceiveByte(0xab);
+    cpu.run();
+
+    expect(cpu.regs[2] & 0xff).toBe(0x03);
+    expect(cpu.regs[3] & 0xff).toBe(0xab);
+    expect(cpu.regs[4] & 0xff).toBe(0x01);
   });
 });
 
@@ -676,6 +719,30 @@ describe("system instructions", () => {
     cpu.load([0b0000_001_010_000_111]);
     cpu.step();
     expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.ILLEGAL_INSTRUCTION);
+  });
+
+  test("UART RX interrupt vectors to external interrupt cause", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 0x10
+      SLLI r1, r1, 4
+      CSRW 0x04, r1
+      ADDI r1, r0, 3
+      CSRW 0x00, r1
+      ADDI r3, r0, 0x08
+      SB   r3, 0(r2)
+      ADDI r4, r0, 0x11
+      ECALL
+    `);
+
+    cpu.onEcall = () => {};
+    cpu.regs[2] = UartMmio.STATUS;
+    cpu.uartReceiveByte(0x44);
+    cpu.run(8);
+
+    expect(cpu.regs[4]).toBe(0);
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.EXTERNAL_INTERRUPT);
+    expect(cpu.csrs[Csr.EPC]).toBe(14);
+    expect(cpu.pc).toBe(0x0100 + (Cause.EXTERNAL_INTERRUPT << 1));
   });
 });
 

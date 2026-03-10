@@ -71,6 +71,23 @@ export const Csr = {
 const STATUS_IE = 1 << 0; // interrupt enable
 const STATUS_PRIV = 1 << 1; // privilege: 0=User, 1=Supervisor
 
+// UART MMIO map
+export const UartMmio = {
+  BASE: 0xff00,
+  TXDATA: 0xff00,
+  RXDATA: 0xff02,
+  STATUS: 0xff04,
+  BAUD_DIV: 0xff06,
+  END: 0xff08,
+} as const;
+
+const UART_STATUS_TX_READY = 1 << 0;
+const UART_STATUS_RX_VALID = 1 << 1;
+const UART_STATUS_TX_IRQ_EN = 1 << 2;
+const UART_STATUS_RX_IRQ_EN = 1 << 3;
+
+const UART_FRAME_BITS = 10; // 8N1
+
 // --- Helpers ---
 
 /** Sign-extend a value of `bits` width to 16 bits. */
@@ -94,6 +111,129 @@ export interface StepResult {
   running: boolean;
 }
 
+class Uart {
+  private txBusyCycles = 0;
+  private txByte = 0;
+  private rxValid = false;
+  private rxByte = 0;
+  private control = 0;
+  private baudDiv = 1;
+
+  onTxByte: ((value: number) => void) | null = null;
+
+  get irqPending(): boolean {
+    return (
+      (this.txReady && (this.control & UART_STATUS_TX_IRQ_EN) !== 0) ||
+      (this.rxValid && (this.control & UART_STATUS_RX_IRQ_EN) !== 0)
+    );
+  }
+
+  receiveByte(value: number): void {
+    // If software does not drain RXDATA in time, preserve the oldest byte.
+    if (!this.rxValid) {
+      this.rxByte = value & 0xff;
+      this.rxValid = true;
+    }
+  }
+
+  reset(): void {
+    this.txBusyCycles = 0;
+    this.txByte = 0;
+    this.rxValid = false;
+    this.rxByte = 0;
+    this.control = 0;
+    this.baudDiv = 1;
+  }
+
+  tick(cycles: number): void {
+    if (this.txBusyCycles <= 0) {
+      return;
+    }
+    this.txBusyCycles -= cycles;
+    if (this.txBusyCycles <= 0) {
+      this.txBusyCycles = 0;
+      this.onTxByte?.(this.txByte);
+    }
+  }
+
+  handles(addr: number): boolean {
+    const a = addr & 0xffff;
+    return a >= UartMmio.BASE && a < UartMmio.END;
+  }
+
+  read8(addr: number): number {
+    switch (addr & 0xffff) {
+      case UartMmio.TXDATA:
+      case UartMmio.TXDATA + 1:
+        return 0;
+
+      case UartMmio.RXDATA: {
+        const value = this.rxValid ? this.rxByte : 0;
+        this.rxValid = false;
+        this.rxByte = 0;
+        return value;
+      }
+      case UartMmio.RXDATA + 1:
+        return 0;
+
+      case UartMmio.STATUS:
+        return this.status;
+      case UartMmio.STATUS + 1:
+        return 0;
+
+      case UartMmio.BAUD_DIV:
+        return this.baudDiv & 0xff;
+      case UartMmio.BAUD_DIV + 1:
+        return (this.baudDiv >> 8) & 0xff;
+
+      default:
+        return 0;
+    }
+  }
+
+  write8(addr: number, value: number): void {
+    const byte = value & 0xff;
+    switch (addr & 0xffff) {
+      case UartMmio.TXDATA:
+        if (this.txReady) {
+          this.txByte = byte;
+          this.txBusyCycles = this.baudDiv * UART_FRAME_BITS;
+        }
+        break;
+
+      case UartMmio.STATUS:
+        this.control = byte & (UART_STATUS_TX_IRQ_EN | UART_STATUS_RX_IRQ_EN);
+        break;
+
+      case UartMmio.BAUD_DIV:
+        this.baudDiv = Math.max(1, ((this.baudDiv & 0xff00) | byte) & 0xffff);
+        break;
+
+      case UartMmio.BAUD_DIV + 1:
+        this.baudDiv = Math.max(
+          1,
+          ((byte << 8) | (this.baudDiv & 0xff)) & 0xffff,
+        );
+        break;
+    }
+  }
+
+  private get txReady(): boolean {
+    return this.txBusyCycles === 0;
+  }
+
+  private get status(): number {
+    let status = this.control;
+    if (this.txReady) {
+      status |= UART_STATUS_TX_READY;
+    }
+    if (this.rxValid) {
+      status |= UART_STATUS_RX_VALID;
+    }
+    return status;
+  }
+}
+
 export class Cool16 {
   regs = new Uint16Array(NUM_REGS);
   mem = new Uint8Array(MEM_SIZE);
@@ -109,10 +249,16 @@ export class Cool16 {
     this.halted = true;
   };
   onEbreak: (() => void) | null = null;
+  onUartTxByte: ((value: number) => void) | null = null;
+
+  private readonly uart = new Uart();
 
   constructor() {
     // Start in supervisor mode with interrupts disabled
     this.csrs[Csr.STATUS] = STATUS_PRIV;
+    this.uart.onTxByte = (value) => {
+      this.onUartTxByte?.(value);
+    };
   }
 
   /** Load a program (array of 16-bit words) into memory starting at `addr`. */
@@ -126,22 +272,29 @@ export class Cool16 {
 
   /** Read a 16-bit word from memory (little-endian). */
   read16(addr: number): number {
-    return this.mem[addr & 0xffff] | (this.mem[(addr + 1) & 0xffff] << 8);
+    return this.read8(addr) | (this.read8(addr + 1) << 8);
   }
 
   /** Write a 16-bit word to memory (little-endian). */
   write16(addr: number, value: number): void {
-    this.mem[addr & 0xffff] = value & 0xff;
-    this.mem[(addr + 1) & 0xffff] = (value >> 8) & 0xff;
+    this.write8(addr, value & 0xff);
+    this.write8(addr + 1, (value >> 8) & 0xff);
   }
 
   /** Read an 8-bit byte from memory. */
   read8(addr: number): number {
+    if (this.uart.handles(addr)) {
+      return this.uart.read8(addr);
+    }
     return this.mem[addr & 0xffff];
   }
 
   /** Write an 8-bit byte to memory. */
   write8(addr: number, value: number): void {
+    if (this.uart.handles(addr)) {
+      this.uart.write8(addr, value);
+      return;
+    }
     this.mem[addr & 0xffff] = value & 0xff;
   }
 
@@ -157,6 +310,19 @@ export class Cool16 {
     // Disable interrupts, enter supervisor mode
     this.csrs[Csr.STATUS] = (this.csrs[Csr.STATUS] & ~STATUS_IE) | STATUS_PRIV;
     this.pc = (this.csrs[Csr.IVEC] + (cause << 1)) & 0xffff;
+  }
+
+  /** Raise an asynchronous interrupt and preserve the post-instruction return PC. */
+  private trapInterrupt(cause: number, returnPc: number): void {
+    this.csrs[Csr.EPC] = returnPc & 0xffff;
+    this.csrs[Csr.ESTATUS] = this.csrs[Csr.STATUS];
+    this.csrs[Csr.CAUSE] = cause;
+    this.csrs[Csr.STATUS] = (this.csrs[Csr.STATUS] & ~STATUS_IE) | STATUS_PRIV;
+    this.pc = (this.csrs[Csr.IVEC] + (cause << 1)) & 0xffff;
+  }
+
+  private get interruptsEnabled(): boolean {
+    return (this.csrs[Csr.STATUS] & STATUS_IE) !== 0;
   }
 
   /** Set a register value, enforcing r0 = 0. */
@@ -175,6 +341,13 @@ export class Cool16 {
     }
 
     this.cycles++;
+
+    if (this.interruptsEnabled && this.uart.irqPending) {
+      this.trapInterrupt(Cause.EXTERNAL_INTERRUPT, this.pc);
+      this.uart.tick(1);
+      return { pc, instr, running: !this.halted };
+    }
+
     const op = (instr >> 12) & 0xf;
     let nextPc = (this.pc + 2) & 0xffff;
 
@@ -425,7 +598,13 @@ export class Cool16 {
     }
 
     this.pc = nextPc;
+    this.uart.tick(1);
     return { pc, instr, running: !this.halted };
+  }
+
+  /** Inject one byte into the UART RX register from an external source. */
+  uartReceiveByte(value: number): void {
+    this.uart.receiveByte(value);
   }
 
   /** Run until halted or max cycles reached. */
@@ -449,6 +628,7 @@ export class Cool16 {
     this.halted = false;
     this.cycles = 0;
     this.csrs[Csr.STATUS] = STATUS_PRIV;
+    this.uart.reset();
   }
 
   /** Dump register state for debugging. */

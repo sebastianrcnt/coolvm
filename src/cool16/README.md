@@ -45,6 +45,19 @@
 - `LW`/`SW`는 짝수 주소 정렬 필요
 - `LB`/`SB`는 임의 주소 허용
 
+### MMIO UART (기본 매핑)
+
+레퍼런스 VM은 UART를 MMIO로 노출합니다.
+
+| 주소     | 이름            | 접근              | 설명                                                                                 |
+| -------- | --------------- | ----------------- | ------------------------------------------------------------------------------------ |
+| `0xFF00` | `UART_TXDATA`   | byte write        | TX ready일 때 low 8-bit 문자 전송 시작                                               |
+| `0xFF02` | `UART_RXDATA`   | byte read         | 수신 바이트 읽기 (읽으면 RX valid 클리어)                                            |
+| `0xFF04` | `UART_STATUS`   | byte read/write   | bit0 `TX_READY`(RO), bit1 `RX_VALID`(RO), bit2 `TX_IRQ_EN`(RW), bit3 `RX_IRQ_EN`(RW) |
+| `0xFF06` | `UART_BAUD_DIV` | 16-bit read/write | UART bit당 CPU cycle 수 (최소 1)                                                     |
+
+TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개 전송에 `UART_BAUD_DIV * 10` 사이클이 필요합니다.
+
 ## 인코딩 요약
 
 모든 명령어는 16비트입니다.
@@ -103,6 +116,8 @@
 
 - `ECALL`, `EBREAK`, `ERET`, `FENCE`
 - `CSRR rd, csr`, `CSRW csr, rs`
+
+외부 인터럽트(`CAUSE=5`)는 UART 상태/IRQ enable 조합에 따라 발생할 수 있습니다.
 
 CLI 기본 러너(`cool16 run`)의 `ECALL` 처리:
 
