@@ -65,10 +65,15 @@ function encodeB(op: number, rs: number, off: number): number {
 function resolveImmediate(
   token: string,
   labels: Map<string, number>,
+  constants: Map<string, number>,
 ): number | null {
   const label = labels.get(token);
   if (label !== undefined) {
     return label;
+  }
+  const constant = constants.get(token);
+  if (constant !== undefined) {
+    return constant;
   }
   return parseImm(token);
 }
@@ -123,12 +128,13 @@ function encodeDataDirective(
   mnemonic: string,
   args: string[],
   labels: Map<string, number>,
+  constants: Map<string, number>,
 ): number[] | null {
   if (mnemonic === ".BYTE") {
     if (args.length === 0) return null;
     const bytes: number[] = [];
     for (const arg of args) {
-      const value = resolveImmediate(arg, labels);
+      const value = resolveImmediate(arg, labels, constants);
       if (value === null) {
         return null;
       }
@@ -213,11 +219,12 @@ export function assembleLine(
   args: string[],
   addr: number,
   labels: Map<string, number>,
+  constants: Map<string, number>,
 ): { bytes: number[]; error?: string } {
   const fail = (message: string) => ({ bytes: [0], error: message });
 
   const resolveBranch = (token: string): number | null => {
-    const direct = resolveImmediate(token, labels);
+    const direct = resolveImmediate(token, labels, constants);
     if (direct === null) return null;
     const off = direct - (addr + 1);
     const encoded = toSigned2(off);
@@ -251,7 +258,7 @@ export function assembleLine(
     case "LDI": {
       if (args.length !== 2) return fail("LDI expects 2 args");
       const rd = parseReg(args[0]);
-      const imm = resolveImmediate(args[1], labels);
+      const imm = resolveImmediate(args[1], labels, constants);
       if (rd === null || imm === null) return fail("invalid operand");
       if (imm < 0 || imm > 3) return fail("LDI immediate must be 0..3");
       return { bytes: [encodeI(Op.LDI, rd, imm & 3)] };
@@ -322,6 +329,7 @@ export function assemble(source: string): AssembleResult {
   const lines = source.split("\n");
   const errors: AssembleError[] = [];
   const labels = new Map<string, number>();
+  const constants = new Map<string, number>();
 
   const instructions: Array<{
     lineNum: number;
@@ -349,6 +357,31 @@ export function assemble(source: string): AssembleResult {
     }
 
     if (mnemonic) {
+      if (mnemonic === ".EQU") {
+        if (args.length !== 2) {
+          errors.push({ line: i + 1, message: ".EQU expects NAME, value" });
+          continue;
+        }
+
+        const name = args[0];
+        const value = resolveImmediate(args[1], labels, constants);
+        if (value === null) {
+          errors.push({
+            line: i + 1,
+            message: `invalid .EQU value: ${args[1]}`,
+          });
+          continue;
+        }
+
+        if (constants.has(name)) {
+          errors.push({ line: i + 1, message: `duplicate constant: ${name}` });
+          continue;
+        }
+
+        constants.set(name, value);
+        continue;
+      }
+
       const isData = mnemonic === ".BYTE" || mnemonic === ".ASCII";
       instructions.push({
         lineNum: i + 1,
@@ -369,7 +402,12 @@ export function assemble(source: string): AssembleResult {
     );
 
     if (isData) {
-      const result = encodeDataDirective(mnemonic, expandedArgs, labels);
+      const result = encodeDataDirective(
+        mnemonic,
+        expandedArgs,
+        labels,
+        constants,
+      );
       if (result === null) {
         errors.push({
           line: lineNum,
@@ -381,7 +419,13 @@ export function assemble(source: string): AssembleResult {
       continue;
     }
 
-    const assembled = assembleLine(mnemonic, expandedArgs, currentAddr, labels);
+    const assembled = assembleLine(
+      mnemonic,
+      expandedArgs,
+      currentAddr,
+      labels,
+      constants,
+    );
     if (assembled.error) {
       errors.push({ line: lineNum, message: assembled.error });
     }
