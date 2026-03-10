@@ -123,8 +123,8 @@ function encodeB(op: number, rs1: number, rs2: number, imm6: number): number {
   return (op << 12) | (rs1 << 9) | (rs2 << 6) | (imm6 & 0x3f);
 }
 
-function encodeJ(imm12: number): number {
-  return (Op.JAL << 12) | (imm12 & 0xfff);
+function encodeJ(rd: number, imm9: number): number {
+  return (Op.JAL << 12) | (rd << 9) | (imm9 & 0x1ff);
 }
 
 function encodeSys(sub: number, reg = 0, csr = 0): number {
@@ -455,15 +455,14 @@ export function assembleLine(
       if (args.length === 1) {
         const off = resolveJumpOff(args[0]);
         if (off === null) return fail("invalid operand");
-        emit(encodeJ(off));
+        emit(encodeJ(7, off));
         break;
       }
       if (args.length === 2) {
         const rd = parseReg(args[0]);
         const off = resolveJumpOff(args[1]);
         if (rd === null || off === null) return fail("invalid operand");
-        if (rd !== 7) return fail("cool16 jal only supports rd=ra/x1");
-        emit(encodeJ(off));
+        emit(encodeJ(rd, off));
         break;
       }
       return fail("JAL expects 1 or 2 args");
@@ -474,7 +473,7 @@ export function assembleLine(
       if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
       const off = resolveJumpOff(args[0]);
       if (off === null) return fail("invalid operand");
-      emit(encodeJ(off));
+      emit(encodeJ(7, off));
       break;
     }
 

@@ -83,11 +83,12 @@ export function disassemble(instr: number, addr?: number): string {
     }
 
     case Op.JAL: {
-      const off = signed(instr & 0xfff, 12);
+      const rd = (instr >> 9) & 0x7;
+      const off = signed(instr & 0x1ff, 9);
       if (addr !== undefined) {
-        return `JAL ${hex16(addr + 2 + (off << 1))}`;
+        return `JAL ${reg(rd)}, ${hex16(addr + 2 + (off << 1))}`;
       }
-      return `JAL ${off}`;
+      return `JAL ${reg(rd)}, ${off}`;
     }
 
     case Op.SYS: {

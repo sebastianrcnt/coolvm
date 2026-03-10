@@ -498,9 +498,10 @@ export class Cool16 {
       }
 
       case Op.JAL: {
-        const imm12 = sext(instr & 0xfff, 12);
-        this.setReg(7, nextPc);
-        nextPc = (nextPc + (imm12 << 1)) & 0xffff;
+        const rd = (instr >> 9) & 0x7;
+        const imm9 = sext(instr & 0x1ff, 9);
+        this.setReg(rd, nextPc);
+        nextPc = (nextPc + (imm9 << 1)) & 0xffff;
         break;
       }
 

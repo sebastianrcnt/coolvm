@@ -190,10 +190,21 @@ describe("J-format encoding", () => {
       NOP
     `);
     expect(result.errors.length).toBe(0);
-    // JAL at addr 0, target at addr 4
+    // JAL at addr 0, target at addr 4, default rd=7
     // offset = (4 - 2) >> 1 = 1
-    const imm12 = result.program[0] & 0xfff;
-    expect(imm12).toBe(1);
+    expect((result.program[0] >> 9) & 0x7).toBe(7);
+    const imm9 = result.program[0] & 0x1ff;
+    expect(imm9).toBe(1);
+  });
+
+  test("JAL rd, label encodes selected destination register", () => {
+    const result = assemble(`
+      JAL r3, target
+    target:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect((result.program[0] >> 9) & 0x7).toBe(3);
   });
 });
 
@@ -636,15 +647,15 @@ describe("RISC-V compatibility layer", () => {
     expect(bnez.program[0]).toBe(bne.program[0]);
   });
 
-  test("jal supports rd,label form for ra/x1 only", () => {
+  test("jal supports both default-link and explicit rd,label forms", () => {
     const jalRa = assemble("jal ra, target\n target: NOP");
     const jalOneArg = assemble("jal target\n target: NOP");
     expect(jalRa.errors.length).toBe(0);
     expect(jalRa.program[0]).toBe(jalOneArg.program[0]);
 
     const jalX0 = assemble("jal x0, target\n target: NOP");
-    expect(jalX0.errors.length).toBe(1);
-    expect(jalX0.errors[0].message).toContain("rd=ra/x1");
+    expect(jalX0.errors.length).toBe(0);
+    expect((jalX0.program[0] >> 9) & 0x7).toBe(0);
   });
 
   test("jalr supports rd, 0(rs1) and rejects non-zero offset", () => {
