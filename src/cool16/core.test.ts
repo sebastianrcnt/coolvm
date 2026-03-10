@@ -29,6 +29,32 @@ describe("register file", () => {
     expect(cpu.regs[0]).toBe(0);
     expect(cpu.regs[1]).toBe(5);
   });
+
+  test("step returns pre-execution pc and instruction and increments cycles", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 5
+      ECALL
+    `);
+    const step = cpu.step();
+    expect(step).toEqual({
+      pc: 0,
+      instr: assemble("ADDI r1, r0, 5").program[0],
+      running: true,
+    });
+    expect(cpu.regs[1]).toBe(5);
+    expect(cpu.pc).toBe(2);
+    expect(cpu.cycles).toBe(1);
+  });
+
+  test("step returns running false when already halted", () => {
+    const cpu = new Cool16();
+    cpu.halted = true;
+    const step = cpu.step();
+    expect(step.running).toBe(false);
+    expect(step.pc).toBe(0);
+    expect(step.instr).toBe(0);
+    expect(cpu.cycles).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -709,5 +735,16 @@ describe("reset", () => {
     expect(cpu.regs[1]).toBe(0);
     expect(cpu.pc).toBe(0);
     expect(cpu.halted).toBe(false);
+    expect(cpu.cycles).toBe(0);
+  });
+
+  test("run returns executed cycles and updates the cycle counter", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 1
+      ECALL
+    `);
+    expect(cpu.run()).toBe(2);
+    expect(cpu.cycles).toBe(2);
+    expect(cpu.run()).toBe(0);
   });
 });

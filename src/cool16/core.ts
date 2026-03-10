@@ -88,11 +88,18 @@ function i16(value: number): number {
 
 export type EcallHandler = (vm: Cool16) => void;
 
+export interface StepResult {
+  pc: number;
+  instr: number;
+  running: boolean;
+}
+
 export class Cool16 {
   regs = new Uint16Array(NUM_REGS);
   mem  = new Uint8Array(MEM_SIZE);
   pc   = 0;
   halted = false;
+  cycles = 0;
 
   // CSRs
   csrs = new Uint16Array(64);
@@ -157,11 +164,15 @@ export class Cool16 {
     }
   }
 
-  /** Execute a single instruction. Returns false if halted. */
-  step(): boolean {
-    if (this.halted) return false;
+  /** Execute a single instruction and return the pre-execution state. */
+  step(): StepResult {
+    const pc = this.pc;
+    const instr = this.read16(pc);
+    if (this.halted) {
+      return { pc, instr, running: false };
+    }
 
-    const instr = this.read16(this.pc);
+    this.cycles++;
     const op  = (instr >> 12) & 0xF;
     let nextPc = (this.pc + 2) & 0xFFFF;
 
@@ -189,7 +200,7 @@ export class Cool16 {
               nextPc = this.regs[rs1];
             } else {
               this.trap(Cause.ILLEGAL_INSTRUCTION);
-              return true;
+              return { pc, instr, running: true };
             }
             break;
           }
@@ -260,7 +271,7 @@ export class Cool16 {
         const addr = (this.regs[base] + off) & 0xFFFF;
         if (addr & 1) {
           this.trap(Cause.MISALIGNED_ACCESS);
-          return true;
+          return { pc, instr, running: true };
         }
         this.setReg(rd, this.read16(addr));
         break;
@@ -273,7 +284,7 @@ export class Cool16 {
         const addr = (this.regs[base] + off) & 0xFFFF;
         if (addr & 1) {
           this.trap(Cause.MISALIGNED_ACCESS);
-          return true;
+          return { pc, instr, running: true };
         }
         this.write16(addr, this.regs[rs]);
         break;
@@ -311,46 +322,46 @@ export class Cool16 {
 
         switch (sub) {
           case Sys.ECALL:
-            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             if (this.inSupervisorMode) {
               this.trap(Cause.ECALL_SUPERVISOR);
             } else {
               this.trap(Cause.ECALL_USER);
             }
             this.onEcall(this);
-            return true;
+            return { pc, instr, running: !this.halted };
 
           case Sys.EBREAK:
-            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             this.trap(Cause.BREAKPOINT);
             this.onEbreak?.();
-            return true;
+            return { pc, instr, running: !this.halted };
 
           case Sys.ERET:
-            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
-            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
+            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             nextPc = this.csrs[Csr.EPC];
             this.csrs[Csr.STATUS] = this.csrs[Csr.ESTATUS];
             break;
 
           case Sys.FENCE:
-            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (reg !== 0 || csr !== 0) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             // no-op on single-core
             break;
 
           case Sys.CSRR:
-            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             this.setReg(reg, this.csrs[csr]);
             break;
 
           case Sys.CSRW:
-            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return true; }
+            if (!this.inSupervisorMode) { this.trap(Cause.ILLEGAL_INSTRUCTION); return { pc, instr, running: true }; }
             this.csrs[csr] = this.regs[reg];
             break;
 
           default:
             this.trap(Cause.ILLEGAL_INSTRUCTION);
-            return true;
+            return { pc, instr, running: true };
         }
         break;
       }
@@ -377,17 +388,19 @@ export class Cool16 {
     }
 
     this.pc = nextPc;
-    return true;
+    return { pc, instr, running: !this.halted };
   }
 
   /** Run until halted or max cycles reached. */
   run(maxCycles = 1_000_000): number {
-    let cycles = 0;
-    while (!this.halted && cycles < maxCycles) {
-      this.step();
-      cycles++;
+    const startCycles = this.cycles;
+    while (this.cycles - startCycles < maxCycles) {
+      const result = this.step();
+      if (!result.running) {
+        break;
+      }
     }
-    return cycles;
+    return this.cycles - startCycles;
   }
 
   /** Reset all state. */
@@ -397,6 +410,7 @@ export class Cool16 {
     this.csrs.fill(0);
     this.pc = 0;
     this.halted = false;
+    this.cycles = 0;
     this.csrs[Csr.STATUS] = STATUS_PRIV;
   }
 

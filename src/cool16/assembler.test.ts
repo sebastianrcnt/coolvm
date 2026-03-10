@@ -1,7 +1,15 @@
 import { test, expect, describe } from "bun:test";
-import { assemble } from "./assembler";
+import { assemble, assembleLine, tokenizeLine } from "./assembler";
 
 describe("assembler basics", () => {
+  test("tokenizeLine exports label, mnemonic, and args", () => {
+    expect(tokenizeLine("start: ADDI r1, r0, 5 ; comment")).toEqual({
+      label: "start",
+      mnemonic: "ADDI",
+      args: ["r1", "r0", "5"],
+    });
+  });
+
   test("empty source produces empty program", () => {
     const result = assemble("");
     expect(result.program.length).toBe(0);
@@ -46,6 +54,32 @@ describe("assembler basics", () => {
     const result = assemble("BOGUS r1, r2");
     expect(result.errors.length).toBe(1);
     expect(result.errors[0].message).toContain("unknown instruction");
+  });
+
+  test("assembleLine assembles a single base instruction", () => {
+    expect(assembleLine("ADDI", ["r1", "r0", "5"], 0, new Map())).toEqual({
+      words: [0b0001_001_000_000101],
+    });
+  });
+
+  test("assembleLine expands a multiword pseudo-instruction", () => {
+    expect(assembleLine("PUSH", ["r3"], 0, new Map())).toEqual({
+      words: [0b0001_110_110_111110, 0b1001_011_110_000000],
+    });
+  });
+
+  test("assembleLine resolves labels relative to the provided address", () => {
+    const labels = new Map([["target", 4]]);
+    expect(assembleLine("BEQ", ["r1", "r2", "target"], 0, labels)).toEqual({
+      words: [0b1110_001_010_000001],
+    });
+  });
+
+  test("assembleLine reports errors without throwing", () => {
+    expect(assembleLine("ADDI", ["r9", "r0", "5"], 0, new Map())).toEqual({
+      words: [0],
+      error: "invalid operand",
+    });
   });
 });
 

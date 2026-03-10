@@ -87,7 +87,7 @@ function encodeSys(sub: number, reg = 0, csr = 0): number {
 
 // --- Tokenizer ---
 
-function tokenizeLine(raw: string): { label: string | null; mnemonic: string | null; args: string[] } {
+export function tokenizeLine(raw: string): { label: string | null; mnemonic: string | null; args: string[] } {
   // Strip comments
   const line = raw.split(";")[0].trim();
   if (!line) return { label: null, mnemonic: null, args: [] };
@@ -111,6 +111,251 @@ function tokenizeLine(raw: string): { label: string | null; mnemonic: string | n
   const args = argStr ? argStr.split(",").map((a) => a.trim()) : [];
 
   return { label, mnemonic, args };
+}
+
+export function assembleLine(
+  mnemonic: string,
+  args: string[],
+  addr: number,
+  labels: Map<string, number>,
+): { words: number[]; error?: string } {
+  const words: number[] = [];
+  const emit = (word: number) => words.push(word & 0xFFFF);
+  const fail = (error: string) => ({ words: words.length > 0 ? words : [0], error });
+
+  const resolveBranchOff = (token: string): number | null => {
+    const label = labels.get(token);
+    if (label !== undefined) {
+      const rel = label - (addr + 2);
+      return rel >> 1;
+    }
+    return parseImm(token);
+  };
+
+  const resolveJumpOff = (token: string): number | null => {
+    const label = labels.get(token);
+    if (label !== undefined) {
+      const rel = label - (addr + 2);
+      return rel >> 1;
+    }
+    return parseImm(token);
+  };
+
+  switch (mnemonic) {
+    case "ADD": case "SUB": case "AND": case "OR": case "XOR":
+    case "SLT": case "SLTU": {
+      if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
+      const rd  = parseReg(args[0]);
+      const rs1 = parseReg(args[1]);
+      const rs2 = parseReg(args[2]);
+      if (rd === null || rs1 === null || rs2 === null) return fail("invalid register");
+      const funcMap: Record<string, number> = {
+        ADD: Func.ADD, SUB: Func.SUB, AND: Func.AND, OR: Func.OR,
+        XOR: Func.XOR, SLT: Func.SLT, SLTU: Func.SLTU,
+      };
+      emit(encodeR(rd, rs1, rs2, funcMap[mnemonic]));
+      break;
+    }
+
+    case "JALR": {
+      if (args.length !== 2) return fail("JALR expects 2 args");
+      const rd  = parseReg(args[0]);
+      const rs1 = parseReg(args[1]);
+      if (rd === null || rs1 === null) return fail("invalid register");
+      emit(encodeR(rd, rs1, 0b111, Func.SPECIAL));
+      break;
+    }
+
+    case "ADDI": case "ANDI": case "ORI": case "XORI":
+    case "SLLI": case "SRLI": case "SRAI": {
+      if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
+      const rd  = parseReg(args[0]);
+      const rs1 = parseReg(args[1]);
+      const imm = parseImm(args[2]);
+      if (rd === null || rs1 === null || imm === null) return fail("invalid operand");
+      const opMap: Record<string, number> = {
+        ADDI: Op.ADDI, ANDI: Op.ANDI, ORI: Op.ORI, XORI: Op.XORI,
+        SLLI: Op.SLLI, SRLI: Op.SRLI, SRAI: Op.SRAI,
+      };
+      emit(encodeI(opMap[mnemonic], rd, rs1, imm));
+      break;
+    }
+
+    case "LW": case "LB": {
+      if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
+      const rd = parseReg(args[0]);
+      const mem = parseMemOperand(args[1]);
+      if (rd === null || mem === null) return fail("invalid operand");
+      emit(encodeM(mnemonic === "LW" ? Op.LW : Op.LB, rd, mem.base, mem.imm));
+      break;
+    }
+
+    case "SW": case "SB": {
+      if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
+      const rs = parseReg(args[0]);
+      const mem = parseMemOperand(args[1]);
+      if (rs === null || mem === null) return fail("invalid operand");
+      emit(encodeM(mnemonic === "SW" ? Op.SW : Op.SB, rs, mem.base, mem.imm));
+      break;
+    }
+
+    case "BEQ": case "BNE": {
+      if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
+      const rs1 = parseReg(args[0]);
+      const rs2 = parseReg(args[1]);
+      const off = resolveBranchOff(args[2]);
+      if (rs1 === null || rs2 === null || off === null) return fail("invalid operand");
+      emit(encodeB(mnemonic === "BEQ" ? Op.BEQ : Op.BNE, rs1, rs2, off));
+      break;
+    }
+
+    case "JAL": {
+      if (args.length !== 1) return fail("JAL expects 1 arg");
+      const off = resolveJumpOff(args[0]);
+      if (off === null) return fail("invalid operand");
+      emit(encodeJ(off));
+      break;
+    }
+
+    case "ECALL": emit(encodeSys(Sys.ECALL)); break;
+    case "EBREAK": emit(encodeSys(Sys.EBREAK)); break;
+    case "ERET": emit(encodeSys(Sys.ERET)); break;
+    case "FENCE": emit(encodeSys(Sys.FENCE)); break;
+
+    case "CSRR": {
+      if (args.length !== 2) return fail("CSRR expects 2 args");
+      const rd  = parseReg(args[0]);
+      const csr = parseImm(args[1]);
+      if (rd === null || csr === null) return fail("invalid operand");
+      emit(encodeSys(Sys.CSRR, rd, csr));
+      break;
+    }
+
+    case "CSRW": {
+      if (args.length !== 2) return fail("CSRW expects 2 args");
+      const csr = parseImm(args[0]);
+      const rs  = parseReg(args[1]);
+      if (csr === null || rs === null) return fail("invalid operand");
+      emit(encodeSys(Sys.CSRW, rs, csr));
+      break;
+    }
+
+    case "NOP":
+      emit(encodeR(0, 0, 0, Func.ADD));
+      break;
+    case "MOV": {
+      if (args.length !== 2) return fail("MOV expects 2 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      if (rd === null || rs === null) return fail("invalid register");
+      emit(encodeR(rd, rs, 0, Func.ADD));
+      break;
+    }
+    case "RET":
+      emit(encodeR(0, 7, 0b111, Func.SPECIAL));
+      break;
+    case "NEG": {
+      if (args.length !== 2) return fail("NEG expects 2 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      if (rd === null || rs === null) return fail("invalid register");
+      emit(encodeR(rd, 0, rs, Func.SUB));
+      break;
+    }
+    case "NOT": {
+      if (args.length !== 2) return fail("NOT expects 2 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      if (rd === null || rs === null) return fail("invalid register");
+      emit(encodeR(rd, 0, rs, Func.SUB));
+      emit(encodeI(Op.ADDI, rd, rd, -1));
+      break;
+    }
+    case "JR": {
+      if (args.length !== 1) return fail("JR expects 1 arg");
+      const rs = parseReg(args[0]);
+      if (rs === null) return fail("invalid register");
+      emit(encodeR(0, rs, 0b111, Func.SPECIAL));
+      break;
+    }
+    case "SUBI": {
+      if (args.length !== 3) return fail("SUBI expects 3 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      const imm = parseImm(args[2]);
+      if (rd === null || rs === null || imm === null) return fail("invalid operand");
+      emit(encodeI(Op.ADDI, rd, rs, -imm));
+      break;
+    }
+    case "SEQZ": {
+      if (args.length !== 2) return fail("SEQZ expects 2 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      if (rd === null || rs === null) return fail("invalid register");
+      emit(encodeR(rd, 0, rs, Func.SLTU));
+      emit(encodeI(Op.XORI, rd, rd, 1));
+      break;
+    }
+    case "SNEZ": {
+      if (args.length !== 2) return fail("SNEZ expects 2 args");
+      const rd = parseReg(args[0]);
+      const rs = parseReg(args[1]);
+      if (rd === null || rs === null) return fail("invalid register");
+      emit(encodeR(rd, 0, rs, Func.SLTU));
+      break;
+    }
+    case "PUSH": {
+      if (args.length !== 1) return fail("PUSH expects 1 arg");
+      const rs = parseReg(args[0]);
+      if (rs === null) return fail("invalid register");
+      emit(encodeI(Op.ADDI, 6, 6, -2));
+      emit(encodeM(Op.SW, rs, 6, 0));
+      break;
+    }
+    case "POP": {
+      if (args.length !== 1) return fail("POP expects 1 arg");
+      const rd = parseReg(args[0]);
+      if (rd === null) return fail("invalid register");
+      emit(encodeM(Op.LW, rd, 6, 0));
+      emit(encodeI(Op.ADDI, 6, 6, 2));
+      break;
+    }
+    case "CALL":
+    case "JMP": {
+      if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
+      const off = resolveJumpOff(args[0]);
+      if (off === null) return fail("invalid operand");
+      emit(encodeJ(off));
+      break;
+    }
+
+    case "LI": {
+      if (args.length !== 2) return fail("LI expects 2 args");
+      const rd  = parseReg(args[0]);
+      const imm = parseImm(args[1]);
+      if (rd === null || imm === null) return fail("invalid operand");
+      if (imm >= -32 && imm <= 31) {
+        emit(encodeI(Op.ADDI, rd, 0, imm));
+        break;
+      }
+      const value = toU16(imm);
+      const signed = (value << 16) >> 16;
+      const top6 = signed >> 10;
+      const mid6 = (value >> 4) & 0x3F;
+      const low4 = value & 0xF;
+      emit(encodeI(Op.ADDI, rd, 0, top6));
+      emit(encodeI(Op.SLLI, rd, rd, 6));
+      emit(encodeI(Op.ORI, rd, rd, mid6));
+      emit(encodeI(Op.SLLI, rd, rd, 4));
+      emit(encodeI(Op.ORI, rd, rd, low4));
+      break;
+    }
+
+    default:
+      return fail(`unknown instruction: ${mnemonic}`);
+  }
+
+  return { words };
 }
 
 // --- Assembler (two-pass) ---
@@ -146,247 +391,12 @@ export function assemble(source: string): AssembleResult {
   const words: number[] = [];
 
   for (const { lineNum, mnemonic, args } of instructions) {
-    const emit = (word: number) => words.push(word & 0xFFFF);
-    const err = (msg: string) => errors.push({ line: lineNum, message: msg });
-
     const currentAddr = words.length * 2;
-
-    // Helper to resolve a label or immediate as a branch offset (in imm6, pre-shifted)
-    const resolveBranchOff = (token: string): number | null => {
-      const label = labels.get(token);
-      if (label !== undefined) {
-        const rel = label - (currentAddr + 2); // relative to PC+2
-        return rel >> 1; // pre-shifted
-      }
-      return parseImm(token);
-    };
-
-    const resolveJumpOff = (token: string): number | null => {
-      const label = labels.get(token);
-      if (label !== undefined) {
-        const rel = label - (currentAddr + 2);
-        return rel >> 1;
-      }
-      return parseImm(token);
-    };
-
-    switch (mnemonic) {
-      // R-format
-      case "ADD": case "SUB": case "AND": case "OR": case "XOR":
-      case "SLT": case "SLTU": {
-        if (args.length !== 3) { err(`${mnemonic} expects 3 args`); emit(0); break; }
-        const rd  = parseReg(args[0]);
-        const rs1 = parseReg(args[1]);
-        const rs2 = parseReg(args[2]);
-        if (rd === null || rs1 === null || rs2 === null) { err("invalid register"); emit(0); break; }
-        const funcMap: Record<string, number> = {
-          ADD: Func.ADD, SUB: Func.SUB, AND: Func.AND, OR: Func.OR,
-          XOR: Func.XOR, SLT: Func.SLT, SLTU: Func.SLTU,
-        };
-        emit(encodeR(rd, rs1, rs2, funcMap[mnemonic]));
-        break;
-      }
-
-      case "JALR": {
-        if (args.length !== 2) { err("JALR expects 2 args"); emit(0); break; }
-        const rd  = parseReg(args[0]);
-        const rs1 = parseReg(args[1]);
-        if (rd === null || rs1 === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, rs1, 0b111, Func.SPECIAL));
-        break;
-      }
-
-      // I-format
-      case "ADDI": case "ANDI": case "ORI": case "XORI":
-      case "SLLI": case "SRLI": case "SRAI": {
-        if (args.length !== 3) { err(`${mnemonic} expects 3 args`); emit(0); break; }
-        const rd  = parseReg(args[0]);
-        const rs1 = parseReg(args[1]);
-        const imm = parseImm(args[2]);
-        if (rd === null || rs1 === null || imm === null) { err("invalid operand"); emit(0); break; }
-        const opMap: Record<string, number> = {
-          ADDI: Op.ADDI, ANDI: Op.ANDI, ORI: Op.ORI, XORI: Op.XORI,
-          SLLI: Op.SLLI, SRLI: Op.SRLI, SRAI: Op.SRAI,
-        };
-        emit(encodeI(opMap[mnemonic], rd, rs1, imm));
-        break;
-      }
-
-      // M-format
-      case "LW": case "LB": {
-        if (args.length !== 2) { err(`${mnemonic} expects 2 args`); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const mem = parseMemOperand(args[1]);
-        if (rd === null || mem === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeM(mnemonic === "LW" ? Op.LW : Op.LB, rd, mem.base, mem.imm));
-        break;
-      }
-
-      case "SW": case "SB": {
-        if (args.length !== 2) { err(`${mnemonic} expects 2 args`); emit(0); break; }
-        const rs = parseReg(args[0]);
-        const mem = parseMemOperand(args[1]);
-        if (rs === null || mem === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeM(mnemonic === "SW" ? Op.SW : Op.SB, rs, mem.base, mem.imm));
-        break;
-      }
-
-      // B-format
-      case "BEQ": case "BNE": {
-        if (args.length !== 3) { err(`${mnemonic} expects 3 args`); emit(0); break; }
-        const rs1 = parseReg(args[0]);
-        const rs2 = parseReg(args[1]);
-        const off = resolveBranchOff(args[2]);
-        if (rs1 === null || rs2 === null || off === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeB(mnemonic === "BEQ" ? Op.BEQ : Op.BNE, rs1, rs2, off));
-        break;
-      }
-
-      // J-format
-      case "JAL": {
-        if (args.length !== 1) { err("JAL expects 1 arg"); emit(0); break; }
-        const off = resolveJumpOff(args[0]);
-        if (off === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeJ(off));
-        break;
-      }
-
-      // SYS
-      case "ECALL":  emit(encodeSys(Sys.ECALL));  break;
-      case "EBREAK": emit(encodeSys(Sys.EBREAK)); break;
-      case "ERET":   emit(encodeSys(Sys.ERET));   break;
-      case "FENCE":  emit(encodeSys(Sys.FENCE));   break;
-
-      case "CSRR": {
-        if (args.length !== 2) { err("CSRR expects 2 args"); emit(0); break; }
-        const rd  = parseReg(args[0]);
-        const csr = parseImm(args[1]);
-        if (rd === null || csr === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeSys(Sys.CSRR, rd, csr));
-        break;
-      }
-
-      case "CSRW": {
-        if (args.length !== 2) { err("CSRW expects 2 args"); emit(0); break; }
-        const csr = parseImm(args[0]);
-        const rs  = parseReg(args[1]);
-        if (csr === null || rs === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeSys(Sys.CSRW, rs, csr));
-        break;
-      }
-
-      // --- Pseudo-instructions ---
-      case "NOP": emit(encodeR(0, 0, 0, Func.ADD)); break;
-      case "MOV": {
-        if (args.length !== 2) { err("MOV expects 2 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, rs, 0, Func.ADD));
-        break;
-      }
-      case "RET": emit(encodeR(0, 7, 0b111, Func.SPECIAL)); break;
-      case "NEG": {
-        if (args.length !== 2) { err("NEG expects 2 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, 0, rs, Func.SUB));
-        break;
-      }
-      case "NOT": {
-        if (args.length !== 2) { err("NOT expects 2 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, 0, rs, Func.SUB));
-        emit(encodeI(Op.ADDI, rd, rd, -1));
-        break;
-      }
-      case "JR": {
-        if (args.length !== 1) { err("JR expects 1 arg"); emit(0); break; }
-        const rs = parseReg(args[0]);
-        if (rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(0, rs, 0b111, Func.SPECIAL));
-        break;
-      }
-      case "SUBI": {
-        if (args.length !== 3) { err("SUBI expects 3 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        const imm = parseImm(args[2]);
-        if (rd === null || rs === null || imm === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeI(Op.ADDI, rd, rs, -imm));
-        break;
-      }
-      case "SEQZ": {
-        if (args.length !== 2) { err("SEQZ expects 2 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, 0, rs, Func.SLTU));
-        emit(encodeI(Op.XORI, rd, rd, 1));
-        break;
-      }
-      case "SNEZ": {
-        if (args.length !== 2) { err("SNEZ expects 2 args"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        const rs = parseReg(args[1]);
-        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeR(rd, 0, rs, Func.SLTU));
-        break;
-      }
-      case "PUSH": {
-        if (args.length !== 1) { err("PUSH expects 1 arg"); emit(0); break; }
-        const rs = parseReg(args[0]);
-        if (rs === null) { err("invalid register"); emit(0); break; }
-        emit(encodeI(Op.ADDI, 6, 6, -2));
-        emit(encodeM(Op.SW, rs, 6, 0));
-        break;
-      }
-      case "POP": {
-        if (args.length !== 1) { err("POP expects 1 arg"); emit(0); break; }
-        const rd = parseReg(args[0]);
-        if (rd === null) { err("invalid register"); emit(0); break; }
-        emit(encodeM(Op.LW, rd, 6, 0));
-        emit(encodeI(Op.ADDI, 6, 6, 2));
-        break;
-      }
-      case "CALL":
-      case "JMP": {
-        if (args.length !== 1) { err(`${mnemonic} expects 1 arg`); emit(0); break; }
-        const off = resolveJumpOff(args[0]);
-        if (off === null) { err("invalid operand"); emit(0); break; }
-        emit(encodeJ(off));
-        break;
-      }
-
-      case "LI": {
-        if (args.length !== 2) { err("LI expects 2 args"); emit(0); break; }
-        const rd  = parseReg(args[0]);
-        const imm = parseImm(args[1]);
-        if (rd === null || imm === null) { err("invalid operand"); emit(0); break; }
-        if (imm >= -32 && imm <= 31) {
-          emit(encodeI(Op.ADDI, rd, 0, imm));
-          break;
-        }
-        const value = toU16(imm);
-        const signed = (value << 16) >> 16;
-        const top6 = signed >> 10;
-        const mid6 = (value >> 4) & 0x3F;
-        const low4 = value & 0xF;
-        emit(encodeI(Op.ADDI, rd, 0, top6));
-        emit(encodeI(Op.SLLI, rd, rd, 6));
-        emit(encodeI(Op.ORI, rd, rd, mid6));
-        emit(encodeI(Op.SLLI, rd, rd, 4));
-        emit(encodeI(Op.ORI, rd, rd, low4));
-        break;
-      }
-
-      default:
-        err(`unknown instruction: ${mnemonic}`);
-        emit(0);
+    const result = assembleLine(mnemonic, args, currentAddr, labels);
+    if (result.error) {
+      errors.push({ line: lineNum, message: result.error });
     }
+    words.push(...result.words.map((word) => word & 0xFFFF));
   }
 
   return {

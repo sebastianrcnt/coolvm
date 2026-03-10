@@ -3,6 +3,7 @@
 
 import { Cool16 } from "./core";
 import { assemble } from "./assembler";
+import { disassemble } from "./disassembler";
 
 const USAGE = `usage: cool16 <command> [options] <file>
 
@@ -51,13 +52,15 @@ async function main() {
       vm.onEcall = (v) => { v.halted = true; };
 
       if (trace) {
-        let cycles = 0;
-        while (!vm.halted && cycles < maxCycles) {
-          console.log(`[${vm.pc.toString(16).padStart(4, "0")}] ${vm.read16(vm.pc).toString(16).padStart(4, "0")}`);
-          vm.step();
-          cycles++;
+        const startCycles = vm.cycles;
+        while (vm.cycles - startCycles < maxCycles) {
+          const step = vm.step();
+          console.log(`[${step.pc.toString(16).padStart(4, "0")}] ${step.instr.toString(16).padStart(4, "0")}  ${disassemble(step.instr, step.pc)}`);
+          if (!step.running) {
+            break;
+          }
         }
-        console.log(`\n--- halted after ${cycles} cycles ---`);
+        console.log(`\n--- halted after ${vm.cycles - startCycles} cycles ---`);
       } else {
         const cycles = vm.run(maxCycles);
         console.log(`halted after ${cycles} cycles`);
@@ -91,8 +94,19 @@ async function main() {
     }
 
     case "dis": {
-      console.error("disassembler not yet implemented");
-      process.exit(1);
+      if (positional.length < 1) {
+        console.error("error: dis requires a binary file");
+        process.exit(1);
+      }
+      const bytes = new Uint8Array(await Bun.file(positional[0]).arrayBuffer());
+      for (let i = 0; i < bytes.length; i += 2) {
+        const addr = i & 0xFFFF;
+        const lo = bytes[i] ?? 0;
+        const hi = bytes[i + 1] ?? 0;
+        const word = lo | (hi << 8);
+        console.log(`${addr.toString(16).padStart(4, "0")}: ${word.toString(16).padStart(4, "0")}  ${disassemble(word, addr)}`);
+      }
+      break;
     }
 
     default:
