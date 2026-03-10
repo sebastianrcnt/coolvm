@@ -44,6 +44,10 @@ function parseImm(token: string): number | null {
   return isNaN(v) ? null : v;
 }
 
+function toU16(value: number): number {
+  return value & 0xFFFF;
+}
+
 // --- Memory operand parsing: imm6(base) ---
 
 function parseMemOperand(token: string): { imm: number; base: number } | null {
@@ -282,14 +286,100 @@ export function assemble(source: string): AssembleResult {
         break;
       }
       case "RET": emit(encodeR(0, 7, 0b111, Func.SPECIAL)); break;
+      case "NEG": {
+        if (args.length !== 2) { err("NEG expects 2 args"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        const rs = parseReg(args[1]);
+        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeR(rd, 0, rs, Func.SUB));
+        break;
+      }
+      case "NOT": {
+        if (args.length !== 2) { err("NOT expects 2 args"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        const rs = parseReg(args[1]);
+        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeR(rd, 0, rs, Func.SUB));
+        emit(encodeI(Op.ADDI, rd, rd, -1));
+        break;
+      }
+      case "JR": {
+        if (args.length !== 1) { err("JR expects 1 arg"); emit(0); break; }
+        const rs = parseReg(args[0]);
+        if (rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeR(0, rs, 0b111, Func.SPECIAL));
+        break;
+      }
+      case "SUBI": {
+        if (args.length !== 3) { err("SUBI expects 3 args"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        const rs = parseReg(args[1]);
+        const imm = parseImm(args[2]);
+        if (rd === null || rs === null || imm === null) { err("invalid operand"); emit(0); break; }
+        emit(encodeI(Op.ADDI, rd, rs, -imm));
+        break;
+      }
+      case "SEQZ": {
+        if (args.length !== 2) { err("SEQZ expects 2 args"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        const rs = parseReg(args[1]);
+        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeR(rd, 0, rs, Func.SLTU));
+        emit(encodeI(Op.XORI, rd, rd, 1));
+        break;
+      }
+      case "SNEZ": {
+        if (args.length !== 2) { err("SNEZ expects 2 args"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        const rs = parseReg(args[1]);
+        if (rd === null || rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeR(rd, 0, rs, Func.SLTU));
+        break;
+      }
+      case "PUSH": {
+        if (args.length !== 1) { err("PUSH expects 1 arg"); emit(0); break; }
+        const rs = parseReg(args[0]);
+        if (rs === null) { err("invalid register"); emit(0); break; }
+        emit(encodeI(Op.ADDI, 6, 6, -2));
+        emit(encodeM(Op.SW, rs, 6, 0));
+        break;
+      }
+      case "POP": {
+        if (args.length !== 1) { err("POP expects 1 arg"); emit(0); break; }
+        const rd = parseReg(args[0]);
+        if (rd === null) { err("invalid register"); emit(0); break; }
+        emit(encodeM(Op.LW, rd, 6, 0));
+        emit(encodeI(Op.ADDI, 6, 6, 2));
+        break;
+      }
+      case "CALL":
+      case "JMP": {
+        if (args.length !== 1) { err(`${mnemonic} expects 1 arg`); emit(0); break; }
+        const off = resolveJumpOff(args[0]);
+        if (off === null) { err("invalid operand"); emit(0); break; }
+        emit(encodeJ(off));
+        break;
+      }
 
       case "LI": {
         if (args.length !== 2) { err("LI expects 2 args"); emit(0); break; }
         const rd  = parseReg(args[0]);
         const imm = parseImm(args[1]);
         if (rd === null || imm === null) { err("invalid operand"); emit(0); break; }
-        // Small constant path: fits in sign-extended 6-bit (-32..31)
-        emit(encodeI(Op.ADDI, rd, 0, imm));
+        if (imm >= -32 && imm <= 31) {
+          emit(encodeI(Op.ADDI, rd, 0, imm));
+          break;
+        }
+        const value = toU16(imm);
+        const signed = (value << 16) >> 16;
+        const top6 = signed >> 10;
+        const mid6 = (value >> 4) & 0x3F;
+        const low4 = value & 0xF;
+        emit(encodeI(Op.ADDI, rd, 0, top6));
+        emit(encodeI(Op.SLLI, rd, rd, 6));
+        emit(encodeI(Op.ORI, rd, rd, mid6));
+        emit(encodeI(Op.SLLI, rd, rd, 4));
+        emit(encodeI(Op.ORI, rd, rd, low4));
         break;
       }
 

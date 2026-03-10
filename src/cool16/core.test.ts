@@ -1,5 +1,5 @@
-import { test, expect, describe, beforeEach } from "bun:test";
-import { Cool16, Op, Func, Csr, Cause } from "./core";
+import { test, expect, describe } from "bun:test";
+import { Cool16, Csr, Cause } from "./core";
 import { assemble } from "./assembler";
 
 /** Helper: assemble source, load into a fresh VM, return the VM. */
@@ -212,23 +212,14 @@ describe("I-format immediates", () => {
 describe("memory operations", () => {
   test("SW and LW round-trip", () => {
     const cpu = vm(`
-      ADDI r1, r0, 0x1234 & 0x1F
+      LI   r1, 0x1234
       ADDI r2, r0, 0x20
       SW   r1, 0(r2)
       LW   r3, 0(r2)
       ECALL
     `);
-    // ADDI only loads small constants, so r1 will be (0x1234 & 0x1F) which parseImm won't handle
-    // Let's use a simpler value
-    const cpu2 = vm(`
-      ADDI r1, r0, 31
-      ADDI r2, r0, 0x20
-      SW   r1, 0(r2)
-      LW   r3, 0(r2)
-      ECALL
-    `);
-    cpu2.run();
-    expect(cpu2.regs[3]).toBe(31);
+    cpu.run();
+    expect(cpu.regs[3]).toBe(0x1234);
   });
 
   test("SW and LW with offset", () => {
@@ -278,10 +269,21 @@ describe("memory operations", () => {
       LW   r1, 0(r2)
       ECALL
     `);
-    let trapped = false;
     cpu.onEcall = () => {};
     cpu.run(10);
     // After misaligned access, CAUSE should be set
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.MISALIGNED_ACCESS);
+  });
+
+  test("SW misaligned raises trap", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 7
+      ADDI r2, r0, 0x21
+      SW   r1, 0(r2)
+      ECALL
+    `);
+    cpu.onEcall = () => {};
+    cpu.run(10);
     expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.MISALIGNED_ACCESS);
   });
 });
@@ -444,6 +446,102 @@ describe("pseudo-instructions", () => {
     cpu.run();
     expect(cpu.regs[1]).toBe(15);
   });
+
+  test("LI loads full-width constant", () => {
+    const cpu = vm(`
+      LI r1, 0xABCD
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[1]).toBe(0xABCD);
+  });
+
+  test("NEG computes two's complement", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 5
+      NEG  r2, r1
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[2]).toBe(0xFFFB);
+  });
+
+  test("NOT flips all 16 bits", () => {
+    const cpu = vm(`
+      LI   r1, 0x1234
+      NOT  r2, r1
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[2]).toBe(0xEDCB);
+  });
+
+  test("JR jumps without linking", () => {
+    const cpu = vm(`
+      JAL  setup
+      ECALL
+    setup:
+      LI   r2, 0x000C
+      JR   r2
+      ADDI r1, r0, 1
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[1]).toBe(0);
+  });
+
+  test("SUBI subtracts immediate", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 9
+      SUBI r2, r1, 4
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[2]).toBe(5);
+  });
+
+  test("SEQZ and SNEZ derive zero comparisons", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 0
+      ADDI r2, r0, 5
+      SEQZ r3, r1
+      SEQZ r4, r2
+      SNEZ r5, r2
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[3]).toBe(1);
+    expect(cpu.regs[4]).toBe(0);
+    expect(cpu.regs[5]).toBe(1);
+  });
+
+  test("PUSH and POP round-trip through stack", () => {
+    const cpu = vm(`
+      LI   sp, 0x0040
+      LI   r1, 0x1234
+      PUSH r1
+      POP  r2
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[2]).toBe(0x1234);
+    expect(cpu.regs[6]).toBe(0x0040);
+  });
+
+  test("CALL and JMP expand to jal-based control flow", () => {
+    const cpu = vm(`
+      JMP  start
+      ADDI r1, r0, 1
+    start:
+      CALL func
+      ECALL
+    func:
+      ADDI r1, r0, 7
+      RET
+    `);
+    cpu.run();
+    expect(cpu.regs[1]).toBe(7);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -472,6 +570,78 @@ describe("system instructions", () => {
     cpu.run();
     expect(cpu.regs[2]).toBe(0x10);
     expect(cpu.csrs[Csr.IVEC]).toBe(0x10);
+  });
+
+  test("ECALL in user mode records the user cause and vectors through IVEC", () => {
+    const cpu = vm(`
+      ECALL
+    `);
+    cpu.csrs[Csr.STATUS] = 0;
+    cpu.csrs[Csr.IVEC] = 0x20;
+    cpu.run(1);
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.ECALL_USER);
+    expect(cpu.csrs[Csr.EPC]).toBe(0);
+    expect(cpu.csrs[Csr.ESTATUS]).toBe(0);
+    expect(cpu.pc).toBe(0x20 + (Cause.ECALL_USER << 1));
+  });
+
+  test("EBREAK records the breakpoint cause and invokes the callback", () => {
+    const cpu = vm(`
+      EBREAK
+    `);
+    let hit = false;
+    cpu.onEbreak = () => { hit = true; };
+    cpu.run(1);
+    expect(hit).toBe(true);
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.BREAKPOINT);
+  });
+
+  test("FENCE is a no-op", () => {
+    const cpu = vm(`
+      ADDI r1, r0, 1
+      FENCE
+      ADDI r1, r1, 1
+      ECALL
+    `);
+    cpu.run();
+    expect(cpu.regs[1]).toBe(2);
+  });
+
+  test("ERET restores pc and status from trap state", () => {
+    const cpu = new Cool16();
+    cpu.csrs[Csr.EPC] = 0x24;
+    cpu.csrs[Csr.ESTATUS] = 0;
+    cpu.load(assemble("ERET").program);
+    cpu.step();
+    expect(cpu.pc).toBe(0x24);
+    expect(cpu.csrs[Csr.STATUS]).toBe(0);
+  });
+
+  test("ERET in user mode traps as illegal instruction", () => {
+    const cpu = vm(`
+      ERET
+    `);
+    cpu.csrs[Csr.STATUS] = 0;
+    cpu.onEcall = () => {};
+    cpu.run(1);
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.ILLEGAL_INSTRUCTION);
+  });
+
+  test("user-mode CSR access traps as illegal instruction", () => {
+    const cpu = vm(`
+      CSRR r1, 0x04
+    `);
+    cpu.csrs[Csr.STATUS] = 0;
+    cpu.onEcall = () => {};
+    cpu.run(1);
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.ILLEGAL_INSTRUCTION);
+  });
+
+  test("illegal special ALU encoding traps", () => {
+    const cpu = new Cool16();
+    cpu.load([0b0000_001_010_000_111]);
+    cpu.step();
+    expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.ILLEGAL_INSTRUCTION);
   });
 });
 

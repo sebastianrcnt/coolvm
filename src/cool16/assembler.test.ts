@@ -208,6 +208,108 @@ describe("pseudo-instructions", () => {
     const addi = assemble("ADDI r1, r0, 5");
     expect(result.program[0]).toBe(addi.program[0]);
   });
+
+  test("NEG r2, r1 encodes as SUB r2, r0, r1", () => {
+    const result = assemble("NEG r2, r1");
+    expect(result.program).toEqual(new Uint16Array([
+      0b0000_010_000_001_001,
+    ]));
+  });
+
+  test("NOT r2, r1 expands to negation-minus-one sequence", () => {
+    const result = assemble("NOT r2, r1");
+    expect(result.program).toEqual(new Uint16Array([
+      0b0000_010_000_001_001,
+      0b0001_010_010_111111,
+    ]));
+  });
+
+  test("JR r3 encodes as JALR r0, r3", () => {
+    const result = assemble("JR r3");
+    expect(result.program[0]).toBe(0b0000_000_011_111_111);
+  });
+
+  test("SUBI r2, r1, 5 encodes as ADDI r2, r1, -5", () => {
+    const result = assemble("SUBI r2, r1, 5");
+    const addi = assemble("ADDI r2, r1, -5");
+    expect(result.program[0]).toBe(addi.program[0]);
+  });
+
+  test("SEQZ r2, r1 expands to SLTU/XORI", () => {
+    const result = assemble("SEQZ r2, r1");
+    expect(result.program).toEqual(new Uint16Array([
+      0b0000_010_000_001_110,
+      0b0100_010_010_000001,
+    ]));
+  });
+
+  test("SNEZ r2, r1 expands to SLTU r2, r0, r1", () => {
+    const result = assemble("SNEZ r2, r1");
+    expect(result.program).toEqual(new Uint16Array([
+      0b0000_010_000_001_110,
+    ]));
+  });
+
+  test("PUSH r3 expands to stack decrement and store", () => {
+    const result = assemble("PUSH r3");
+    expect(result.program).toEqual(new Uint16Array([
+      0b0001_110_110_111110,
+      0b1001_011_110_000000,
+    ]));
+  });
+
+  test("POP r3 expands to load and stack increment", () => {
+    const result = assemble("POP r3");
+    expect(result.program).toEqual(new Uint16Array([
+      0b1000_011_110_000000,
+      0b0001_110_110_000010,
+    ]));
+  });
+
+  test("CALL label encodes as JAL label", () => {
+    const result = assemble(`
+      CALL target
+      NOP
+    target:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program[0]).toBe(assemble(`
+      JAL target
+      NOP
+    target:
+      NOP
+    `).program[0]);
+  });
+
+  test("JMP label encodes as JAL label", () => {
+    const result = assemble(`
+      JMP target
+      NOP
+    target:
+      NOP
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program[0]).toBe(assemble(`
+      JAL target
+      NOP
+    target:
+      NOP
+    `).program[0]);
+  });
+
+  test("LI r1, 0xABCD expands to a five-instruction sequence", () => {
+    const result = assemble("LI r1, 0xABCD");
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(5);
+    expect(result.program).toEqual(new Uint16Array([
+      0b0001_001_000_101010,
+      0b0101_001_001_000110,
+      0b0011_001_001_111100,
+      0b0101_001_001_000100,
+      0b0011_001_001_001101,
+    ]));
+  });
 });
 
 describe("register aliases", () => {
