@@ -9,7 +9,7 @@
 | 명령어 길이     | 8비트 고정                     |
 | 레지스터        | 4개 (r0~r3), 범용, r0은 항상 0 |
 | 프로그램 카운터 | 8비트                          |
-| 플래그          | Zero (Z), Carry (C)            |
+| 플래그          | 없음                           |
 
 - 레지스터를 4개로 잡은 이유가 핵심인데요 — 레지스터 지정에 2비트만 쓰면 되니까, 8비트 명령어 안에서 오퍼랜드 2~3개를 넣을 여유가 생겨요. 8개로 하면 3비트씩 먹어서 즉시값(immediate)을 넣을 공간이 없어지거든요.
 
@@ -32,7 +32,7 @@
 **B-type (분기):**
 
 ```
-[opcode:4][offset:4]
+[opcode:4][rs:2][offset:2]
 ```
 
 ### 명령어 세트
@@ -51,9 +51,9 @@ Opcode  이름     형식     동작
 0x8     SHR     I       rd = rd >> imm
 0x9     LD      R       rd = MEM[rs]
 0xA     ST      R       MEM[rd] = rs
-0xB     BEQ     B       if Z: PC += sext(off)
-0xC     BNE     B       if !Z: PC += sext(off)
-0xD     BCS     B       if C: PC += sext(off)
+0xB     BEZ     B       if rs == 0: PC += sext(off)
+0xC     BNZ     B       if rs != 0: PC += sext(off)
+0xD     -       -       예약됨
 0xE     JAL     R       rd = PC+1; PC = rs  ← 함수 호출/점프
 0xF     SYS     -       시스템 콜 (halt 등)
 ```
@@ -71,7 +71,7 @@ ADDI r1, 2      ; r1 = 0x0E
 
 불편하지만, 이게 진짜 실제 RISC 설계에서 겪는 문제예요. MIPS의 LUI+ORI, RISC-V의 LUI+ADDI가 정확히 같은 이유로 존재하거든요.
 
-**"분기 범위가 너무 좁지 않아?"** — B-type의 offset이 4비트(부호 확장하면 -8~+7)라서, PC 기준 앞뒤 8바이트밖에 못 뛰어요. 멀리 가려면 JAL로 간접 점프해야 하고요. 이것도 실제 아키텍처에서 short branch / long jump 구분이 왜 존재하는지를 체감하게 해줘요.
+**"분기 범위가 너무 좁지 않아?"** — BEZ/BNZ는 2비트 오프셋만 써서 `pc+1` 기준으로 `-2..+1` 바이트만 점프해요. 너무 짧은 대가를 치르는 대신 플래그를 지우고 숨겨진 상태를 없애는 편의 선택입니다.
 
 ---
 

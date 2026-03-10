@@ -44,9 +44,9 @@ function toU8(value: number): number {
   return value & 0xff;
 }
 
-function toSigned4(value: number): number {
-  if (value < -8 || value > 7) return Number.NaN;
-  const masked = value & 0xf;
+function toSigned2(value: number): number {
+  if (value < -2 || value > 1) return Number.NaN;
+  const masked = value & 0x3;
   return masked;
 }
 
@@ -58,8 +58,8 @@ function encodeI(op: number, rd: number, imm: number): number {
   return (op << 4) | ((rd & 3) << 2) | (imm & 3);
 }
 
-function encodeB(op: number, off: number): number {
-  return (op << 4) | (off & 0xf);
+function encodeB(op: number, rs: number, off: number): number {
+  return (op << 4) | ((rs & 3) << 2) | (off & 0x3);
 }
 
 function resolveImmediate(
@@ -124,7 +124,7 @@ export function assembleLine(
     const direct = resolveImmediate(token, labels);
     if (direct === null) return null;
     const off = direct - (addr + 1);
-    const encoded = toSigned4(off);
+    const encoded = toSigned2(off);
     if (Number.isNaN(encoded)) return null;
     return encoded;
   };
@@ -190,15 +190,17 @@ export function assembleLine(
       };
     }
 
-    case "BEQ":
-    case "BNE":
-    case "BCS": {
-      if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
-      const off = resolveBranch(args[0]);
+    case "BEZ":
+    case "BNZ": {
+      if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
+      const rs = parseReg(args[0]);
+      const off = resolveBranch(args[1]);
+      if (rs === null) {
+        return fail("invalid register");
+      }
       if (off === null) return fail("invalid branch offset");
-      const op =
-        mnemonic === "BEQ" ? Op.BEQ : mnemonic === "BNE" ? Op.BNE : Op.BCS;
-      return { byte: encodeB(op, off) };
+      const op = mnemonic === "BEZ" ? Op.BEZ : Op.BNZ;
+      return { byte: encodeB(op, rs, off) };
     }
 
     case "JAL": {

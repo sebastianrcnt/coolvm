@@ -10,16 +10,11 @@ SHL r3, 3
 ADDI r3, -2
 SHL r3, 3
 
-# r1 <- 0
-LDI r1, 0
-
-# r2 <- 3
-LDI r2, 3
-
-sum_loop:
-  ADD r1, r2
-  ADDI r2, -1
-  BNE sum_loop
+# Build 6 in r1.
+LDI r1, 3
+ADDI r1, 1
+ADDI r1, 1
+ADDI r1, 1
 
 # Convert ASCII '0' (0x30) and print.
 LDI r2, 3

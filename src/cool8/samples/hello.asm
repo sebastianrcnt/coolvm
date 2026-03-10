@@ -21,16 +21,12 @@ SHL r2, 2
 SHL r2, 2
 ADD r1, r2
 
-# 3-iteration loop:
-# - print current char
-# - decrement counter
-# - loop while counter != 0
-LDI r2, 3
-output_loop:
-  ST r3, r1
-  ADDI r1, 1
-  ADDI r2, -1
-  BNE output_loop
+# Print "A", "B", "C"
+ST r3, r1
+ADDI r1, 1
+ST r3, r1
+ADDI r1, 1
+ST r3, r1
 
 # Build '\n' (10) and output.
 LDI r1, 3

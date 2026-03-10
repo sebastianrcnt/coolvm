@@ -16,15 +16,14 @@ LDI r2, 3
 SHL r2, 2
 SHL r2, 2
 
-# Loop count = 4.
-LDI r1, 1
-SHL r1, 2
-
-print_loop:
-  ST r3, r2
-  ADDI r2, 1
-  ADDI r1, -1
-  BNE print_loop
+# Print "0", "1", "2", "3"
+ST r3, r2
+ADDI r2, 1
+ST r3, r2
+ADDI r2, 1
+ST r3, r2
+ADDI r2, 1
+ST r3, r2
 
 # Print '\n' (0x0A).
 LDI r2, 3

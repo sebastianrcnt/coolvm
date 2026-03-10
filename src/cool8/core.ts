@@ -19,9 +19,8 @@ export const Op = {
   SHR: 0x8,
   LD: 0x9,
   ST: 0xa,
-  BEQ: 0xb,
-  BNE: 0xc,
-  BCS: 0xd,
+  BEZ: 0xb,
+  BNZ: 0xc,
   JAL: 0xe,
   SYS: 0xf,
 } as const;
@@ -52,9 +51,6 @@ export class Cool8 {
   halted = false;
   cycles = 0;
 
-  z = 1;
-  c = 0;
-
   onSys: (() => void) | null = null;
   onMmioWrite: ((addr: number, value: number) => void) | null = null;
 
@@ -79,8 +75,6 @@ export class Cool8 {
     this.pc = 0;
     this.halted = false;
     this.cycles = 0;
-    this.z = 1;
-    this.c = 0;
   }
 
   /** Read one byte, including MMIO read path. */
@@ -110,25 +104,6 @@ export class Cool8 {
     }
   }
 
-  private setZ(value: number): void {
-    this.z = (value & 0xff) === 0 ? 1 : 0;
-  }
-
-  private setFlagsFromAdd(sum: number): void {
-    this.c = sum > 0xff ? 1 : 0;
-    this.setZ(sum & 0xff);
-  }
-
-  private setFlagsFromSub(a: number, b: number, diff: number): void {
-    this.c = a >= b ? 1 : 0;
-    this.setZ(diff);
-  }
-
-  private setFlagsFromLogical(value: number): void {
-    this.c = 0;
-    this.setZ(value);
-  }
-
   /** Execute one instruction and return pre-execution state. */
   step(): StepResult {
     const pc = this.pc & 0xff;
@@ -148,7 +123,6 @@ export class Cool8 {
       case Op.ADD: {
         const sum = this.regs[rd] + this.regs[rs];
         this.setReg(rd, sum);
-        this.setFlagsFromAdd(sum);
         break;
       }
       case Op.SUB: {
@@ -156,78 +130,62 @@ export class Cool8 {
         const b = this.regs[rs];
         const diff = (a - b) & 0xff;
         this.setReg(rd, diff);
-        this.setFlagsFromSub(a, b, diff);
         break;
       }
       case Op.AND: {
         const value = this.regs[rd] & this.regs[rs];
         this.setReg(rd, value);
-        this.setFlagsFromLogical(value);
         break;
       }
       case Op.OR: {
         const value = this.regs[rd] | this.regs[rs];
         this.setReg(rd, value);
-        this.setFlagsFromLogical(value);
         break;
       }
       case Op.NOR: {
         const value = ~(this.regs[rd] | this.regs[rs]);
         this.setReg(rd, value);
-        this.setFlagsFromLogical(value);
         break;
       }
       case Op.LDI: {
         const value = rs & 0x3;
         this.setReg(rd, value);
-        this.setZ(value);
         break;
       }
       case Op.ADDI: {
         const imm = sext(rs, 2);
         const sum = this.regs[rd] + imm;
         this.setReg(rd, sum);
-        this.setFlagsFromAdd(sum);
         break;
       }
       case Op.SHL: {
         const value = this.regs[rd] << rs;
         this.setReg(rd, value);
-        this.setFlagsFromLogical(value);
         break;
       }
       case Op.SHR: {
         const value = this.regs[rd] >>> rs;
         this.setReg(rd, value);
-        this.setFlagsFromLogical(value);
         break;
       }
       case Op.LD: {
         this.setReg(rd, this.read8(this.regs[rs]));
-        this.setFlagsFromLogical(this.regs[rd]);
         break;
       }
       case Op.ST: {
         this.write8(this.regs[rd], this.regs[rs]);
         break;
       }
-      case Op.BEQ: {
-        const off = sext(instr & 0xf, 4);
-        if (this.z === 1) {
+      case Op.BEZ: {
+        const off = sext(instr & 0x3, 2);
+        if (this.regs[rs] === 0) {
           nextPc = (nextPc + off) & 0xff;
         }
         break;
       }
-      case Op.BNE: {
-        const off = sext(instr & 0xf, 4);
-        if (this.z === 0) {
-          nextPc = (nextPc + off) & 0xff;
-        }
-        break;
-      }
-      case Op.BCS: {
-        const off = sext(instr & 0xf, 4);
-        if (this.c === 1) {
+      case Op.BNZ: {
+        const off = sext(instr & 0x3, 2);
+        if (this.regs[rs] !== 0) {
           nextPc = (nextPc + off) & 0xff;
         }
         break;
@@ -268,7 +226,7 @@ export class Cool8 {
     for (let i = 0; i < REG_COUNT; i++) {
       regs.push(`${regName(i)}=${toHex8(this.regs[i])}`);
     }
-    regs.push(`pc=${toHex8(this.pc)} z=${this.z} c=${this.c}`);
+    regs.push(`pc=${toHex8(this.pc)}`);
     return regs.join(" ");
   }
 }
