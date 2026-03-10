@@ -1,4 +1,4 @@
-# COOLVM-16: A Clean 16-Bit Educational CPU Architecture
+# cool16: A Clean 16-Bit Educational CPU Architecture
 
 > *"What if we designed a 16-bit CPU in 2026, knowing everything we know now?"*
 
@@ -6,7 +6,7 @@
 
 ## 1. Design Philosophy
 
-COOLVM-16 is a 16-bit RISC processor designed for education. It reflects modern CPU design principles: load/store execution, fixed-width instructions, explicit control flow, no condition-code register, and a small decode footprint suitable for both an emulator and a simple FPGA core.
+cool16 is a 16-bit RISC processor designed for education. It reflects modern CPU design principles: load/store execution, fixed-width instructions, explicit control flow, no condition-code register, and a small decode footprint suitable for both an emulator and a simple FPGA core.
 
 **What we keep from modern CPUs:**
 - Fixed-width 16-bit instructions
@@ -30,7 +30,7 @@ This version prioritizes **architectural consistency** over squeezing in every c
 
 ### 2.1 Registers
 
-COOLVM-16 has eight 16-bit integer registers:
+cool16 has eight 16-bit integer registers:
 
 | Register | Purpose |
 |----------|---------|
@@ -254,7 +254,7 @@ For `ECALL`, `EBREAK`, `ERET`, and `FENCE`, the `reg` and `csr6` fields must be 
 
 ### 4.7 Loading Constants
 
-COOLVM-16 intentionally does **not** include a dedicated full-width immediate instruction in the base ISA. That keeps opcode pressure manageable in a 16-bit encoding.
+cool16 intentionally does **not** include a dedicated full-width immediate instruction in the base ISA. That keeps opcode pressure manageable in a 16-bit encoding.
 
 Small constants use `ADDI rd, r0, imm6`.
 
@@ -312,7 +312,7 @@ my_function:
 
 ## 6. Interrupt / Exception Model
 
-COOLVM-16 has two privilege levels:
+cool16 has two privilege levels:
 - `U` - User
 - `S` - Supervisor
 
@@ -446,4 +446,4 @@ done:
 
 ---
 
-*COOLVM-16 v1.1 - designed for clarity, consistency, and teachability.*
+*cool16 v1.1 - designed for clarity, consistency, and teachability.*
