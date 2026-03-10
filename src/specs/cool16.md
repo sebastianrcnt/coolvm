@@ -58,6 +58,23 @@ This keeps the encoding simple while avoiding a hidden dedicated stack register.
 
 Byte loads and stores are supported. Misaligned word access is architecturally defined to raise an alignment exception.
 
+### 2.3 Default MMIO Layout (Reference VM)
+
+The architecture uses memory-mapped I/O. The reference VM maps a UART at `0xFF00`:
+
+| Address  | Name            | Access       | Meaning                                                                                  |
+| -------- | --------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| `0xFF00` | `UART_TXDATA`   | W (byte)     | Write low 8-bit character to start TX when TX is ready                                   |
+| `0xFF02` | `UART_RXDATA`   | R (byte)     | Read received byte; read clears RX valid                                                 |
+| `0xFF04` | `UART_STATUS`   | R/W (byte)   | bit0 `TX_READY` (RO), bit1 `RX_VALID` (RO), bit2 `TX_IRQ_EN` (RW), bit3 `RX_IRQ_EN` (RW) |
+| `0xFF06` | `UART_BAUD_DIV` | R/W (16-bit) | UART timing divider in CPU cycles per UART bit (minimum 1)                               |
+
+TX timing uses an 8N1 frame model (`10` UART bits per byte), so one transmitted byte takes:
+
+`UART_BAUD_DIV * 10` CPU cycles.
+
+This mapping is part of the reference VM contract and may be expanded with more MMIO devices later.
+
 ---
 
 ## 3. Instruction Encoding
@@ -380,6 +397,15 @@ Implementations must at minimum define causes for:
 - External interrupt
 
 An implementation may define additional cause codes, but these base causes must be stable across emulator and hardware builds.
+
+### 6.6 External interrupt source in the reference VM
+
+In the reference VM, the UART can assert `CAUSE=5` (`External interrupt`) when:
+
+- `RX_VALID && RX_IRQ_EN`, or
+- `TX_READY && TX_IRQ_EN`.
+
+If the interrupt is taken, trap entry follows the same rule as all interrupts (`EPC <- next PC`, then vector through `IVEC + (CAUSE << 1)`).
 
 ---
 
