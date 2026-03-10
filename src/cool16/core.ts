@@ -15,7 +15,7 @@ export const Op = {
   XORI: 0x4,
   SLLI: 0x5,
   SRLI: 0x6,
-  SRAI: 0x7,
+  LUI: 0x7,
   LW: 0x8,
   SW: 0x9,
   JAL: 0xa,
@@ -43,7 +43,7 @@ export const Sys = {
   ECALL: 0b000,
   EBREAK: 0b001,
   ERET: 0b010,
-  FENCE: 0b011,
+  SRAI: 0b011,
   CSRR: 0b100,
   CSRW: 0b101,
 } as const;
@@ -445,11 +445,10 @@ export class Cool16 {
         break;
       }
 
-      case Op.SRAI: {
+      case Op.LUI: {
         const rd = (instr >> 9) & 0x7;
-        const rs1 = (instr >> 6) & 0x7;
-        const shamt = instr & 0xf;
-        this.setReg(rd, i16(this.regs[rs1]) >> shamt);
+        const imm9 = instr & 0x1ff;
+        this.setReg(rd, (imm9 << 7) & 0xffff);
         break;
       }
 
@@ -546,13 +545,12 @@ export class Cool16 {
             this.csrs[Csr.STATUS] = this.csrs[Csr.ESTATUS];
             break;
 
-          case Sys.FENCE:
-            if (reg !== 0 || csr !== 0) {
-              this.trap(Cause.ILLEGAL_INSTRUCTION);
-              return { pc, instr, running: true };
-            }
-            // no-op on single-core
+          case Sys.SRAI: {
+            const rs1 = (csr >> 3) & 0x7;
+            const shamt = csr & 0x7;
+            this.setReg(reg, i16(this.regs[rs1]) >> shamt);
             break;
+          }
 
           case Sys.CSRR:
             if (!this.inSupervisorMode) {

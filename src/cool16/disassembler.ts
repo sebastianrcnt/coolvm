@@ -48,8 +48,7 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.ORI:
     case Op.XORI:
     case Op.SLLI:
-    case Op.SRLI:
-    case Op.SRAI: {
+    case Op.SRLI: {
       const rd = (instr >> 9) & 0x7;
       const rs1 = (instr >> 6) & 0x7;
       const imm = instr & 0x3f;
@@ -60,10 +59,15 @@ export function disassemble(instr: number, addr?: number): string {
         [Op.XORI]: "XORI",
         [Op.SLLI]: "SLLI",
         [Op.SRLI]: "SRLI",
-        [Op.SRAI]: "SRAI",
       };
       const renderedImm = op === Op.ADDI ? signed(imm, 6) : imm;
       return `${mnemonic[op]} ${reg(rd)}, ${reg(rs1)}, ${renderedImm}`;
+    }
+
+    case Op.LUI: {
+      const rd = (instr >> 9) & 0x7;
+      const imm9 = instr & 0x1ff;
+      return `LUI ${reg(rd)}, ${imm9}`;
     }
 
     case Op.LW:
@@ -108,10 +112,11 @@ export function disassemble(instr: number, addr?: number): string {
           return regField === 0 && csr === 0
             ? "ERET"
             : `.word ${hex16(instr)} ; illegal`;
-        case Sys.FENCE:
-          return regField === 0 && csr === 0
-            ? "FENCE"
-            : `.word ${hex16(instr)} ; illegal`;
+        case Sys.SRAI: {
+          const rs1 = (csr >> 3) & 0x7;
+          const shamt = csr & 0x7;
+          return `SRAI ${reg(regField)}, ${reg(rs1)}, ${shamt}`;
+        }
         case Sys.CSRR:
           return `CSRR ${reg(regField)}, 0x${csr.toString(16).padStart(2, "0")}`;
         case Sys.CSRW:

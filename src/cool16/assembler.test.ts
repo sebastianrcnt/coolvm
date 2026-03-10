@@ -344,7 +344,7 @@ describe("pseudo-instructions", () => {
     );
   });
 
-  test("LI r1, 0xABCD expands to a five-instruction sequence", () => {
+  test("LI r1, 0xABCD expands to a five-instruction sequence (bit 6 set)", () => {
     const result = assemble("LI r1, 0xABCD");
     expect(result.errors.length).toBe(0);
     expect(result.program.length).toBe(5);
@@ -354,6 +354,23 @@ describe("pseudo-instructions", () => {
         0b0101_001_001_000100, 0b0011_001_001_001101,
       ]),
     );
+  });
+
+  test("LI r1, 0x1234 expands to LUI+ORI (bit 6 = 0)", () => {
+    const result = assemble("LI r1, 0x1234");
+    expect(result.errors.length).toBe(0);
+    expect(result.program.length).toBe(2);
+    // LUI r1, 0x24 (0x1234 >> 7 = 0x24): op=0111, rd=001, imm9=000100100
+    // ORI r1, r1, 0x34 (0x1234 & 0x3F = 0x34): op=0011, rd=001, rs1=001, imm6=110100
+    expect(result.program[0]).toBe(0b0111_001_000100100);
+    expect(result.program[1]).toBe(0b0011_001_001_110100);
+  });
+
+  test("LUI r1, 0x24 encodes correctly", () => {
+    const result = assemble("LUI r1, 0x24");
+    expect(result.errors.length).toBe(0);
+    // op=0111, rd=001, imm9=000100100
+    expect(result.program[0]).toBe(0b0111_001_000100100);
   });
 });
 

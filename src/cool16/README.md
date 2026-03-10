@@ -104,6 +104,7 @@ TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개
 - **M 형식**: `op(4) reg(3) base(3) imm6(6)`
 - **B 형식**: `op(4) rs1(3) rs2(3) imm6(6)`
 - **J 형식**: `op(4) rd(3) imm9(9)`
+- **U 형식**: `op(4) rd(3) imm9(9)`
 - **S 형식**: `op(4) sub(3) reg(3) csr(6)`
 
 즉시값 규칙:
@@ -126,11 +127,11 @@ TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개
 | `0x4`      | `0100` | I    | XORI                |
 | `0x5`      | `0101` | I    | SLLI                |
 | `0x6`      | `0110` | I    | SRLI                |
-| `0x7`      | `0111` | I    | SRAI                |
+| `0x7`      | `0111` | U    | LUI                 |
 | `0x8`      | `1000` | M    | LW                  |
 | `0x9`      | `1001` | M    | SW                  |
 | `0xA`      | `1010` | J    | JAL                 |
-| `0xB`      | `1011` | S    | SYS (sub로 구분)    |
+| `0xB`      | `1011` | S    | SYS (sub로 구분, SRAI 포함) |
 | `0xC`      | `1100` | M    | LB                  |
 | `0xD`      | `1101` | M    | SB                  |
 | `0xE`      | `1110` | B    | BEQ                 |
@@ -174,13 +175,27 @@ func 필드(bits 2:0)로 연산을 구분합니다:
 
 시프트 명령어는 I-format을 사용하지만, 즉시값 필드 6비트 중 **하위 4비트(bits 3:0)만 시프트량(shamt)으로 사용**합니다. 유효 범위는 0~15이며, 상위 2비트(bits 5:4)는 예약으로 **0이어야** 합니다.
 
-| 명령어                  | 동작                                  |
-| ----------------------- | ------------------------------------- |
-| `SLLI rd, rs1, shamt`   | rd = rs1 << shamt (논리 좌시프트)     |
-| `SRLI rd, rs1, shamt`   | rd = rs1 >>> shamt (논리 우시프트)    |
-| `SRAI rd, rs1, shamt`   | rd = rs1 >> shamt (산술 우시프트)     |
+| 명령어                  | 동작                               |
+| ----------------------- | ---------------------------------- |
+| `SLLI rd, rs1, shamt`   | rd = rs1 << shamt (논리 좌시프트)  |
+| `SRLI rd, rs1, shamt`   | rd = rs1 >>> shamt (논리 우시프트) |
 
-> **주의**: shamt의 상위 2비트가 0이 아닌 인코딩은 현재 구현에서 무시되지만, 향후 버전에서 동작이 변경될 수 있으므로 어셈블러는 반드시 0을 생성해야 합니다.
+> `SRAI`는 S-format(SYS sub=011)으로 인코딩됩니다. 아래 [시스템 섹션](#시스템-sys-s-format-op0xb)을 참조하세요.
+
+### LUI (U-format, `op=0x7`)
+
+인코딩: `op(4) rd(3) imm9(9)`
+
+동작: `rd ← imm9 << 7` (하위 7비트는 0)
+
+9비트 unsigned 즉시값을 7비트 좌시프트하여 레지스터 상위 9비트를 설정합니다. 이후 `ORI rd, rd, low6`로 하위 6비트를 채우면 bit 6 = 0인 임의의 16비트 값을 2개 명령어로 로딩할 수 있습니다.
+
+```asm
+LUI  r1, 0x24       ; r1 = 0x1200  (0x24 << 7)
+ORI  r1, r1, 0x34   ; r1 = 0x1234
+```
+
+bit 6 = 1인 값은 `LI` 의사명령이 자동으로 5-instruction 폴백으로 처리합니다.
 
 ### 메모리 (M-format)
 
@@ -232,17 +247,19 @@ func 필드(bits 2:0)로 연산을 구분합니다:
 
 `sub` 필드(bits 11:9)로 세부 명령어를 구분합니다:
 
-| sub     | 값  | 명령어       | 필수 조건                       | 동작                                    |
-| ------- | --- | ------------ | ------------------------------- | --------------------------------------- |
-| `000`   | 0   | `ECALL`      | reg=0, csr=0                    | 트랩 발생 (아래 참조)                   |
-| `001`   | 1   | `EBREAK`     | reg=0, csr=0                    | BREAKPOINT 트랩                         |
-| `010`   | 2   | `ERET`       | reg=0, csr=0, Supervisor 모드   | PC=EPC, STATUS=ESTATUS                  |
-| `011`   | 3   | `FENCE`      | reg=0, csr=0                    | No-op (단일 코어)                       |
-| `100`   | 4   | `CSRR rd, csr` | Supervisor 모드               | rd = CSR[csr]                           |
-| `101`   | 5   | `CSRW csr, rs` | Supervisor 모드               | CSR[csr] = regs[rs]                     |
-| `110-111`| — | —            | —                               | 예약 (ILLEGAL_INSTRUCTION)              |
+| sub     | 값  | 명령어            | 필수 조건                     | 동작                                          |
+| ------- | --- | ----------------- | ----------------------------- | --------------------------------------------- |
+| `000`   | 0   | `ECALL`           | reg=0, csr=0                  | 트랩 발생 (아래 참조)                         |
+| `001`   | 1   | `EBREAK`          | reg=0, csr=0                  | BREAKPOINT 트랩                               |
+| `010`   | 2   | `ERET`            | reg=0, csr=0, Supervisor 모드 | PC=EPC, STATUS=ESTATUS                        |
+| `011`   | 3   | `SRAI rd, rs1, shamt` | reg=rd, csr[5:3]=rs1, csr[2:0]=shamt | rd = (signed)rs1 >> shamt (shamt: 0-7) |
+| `100`   | 4   | `CSRR rd, csr`    | Supervisor 모드               | rd = CSR[csr]                                 |
+| `101`   | 5   | `CSRW csr, rs`    | Supervisor 모드               | CSR[csr] = regs[rs]                           |
+| `110-111`| — | —                 | —                             | 예약 (ILLEGAL_INSTRUCTION)                    |
 
-**예약 비트 규칙**: ECALL/EBREAK/ERET/FENCE에서 `reg`과 `csr` 필드는 반드시 0이어야 합니다. 0이 아닌 값은 `ILLEGAL_INSTRUCTION` 트랩을 발생시킵니다.
+**예약 비트 규칙**: ECALL/EBREAK/ERET에서 `reg`과 `csr` 필드는 반드시 0이어야 합니다. 0이 아닌 값은 `ILLEGAL_INSTRUCTION` 트랩을 발생시킵니다.
+
+**SRAI 제한**: shamt는 3비트(0-7)입니다. 기존 SRAI I-format(shamt 0-15)에서 변경됐으므로 주의하세요.
 
 **권한 규칙**: ERET/CSRR/CSRW는 Supervisor 모드에서만 실행 가능합니다. User 모드에서 실행 시 `ILLEGAL_INSTRUCTION` 트랩이 발생합니다.
 
@@ -361,7 +378,7 @@ loop:
 | `BEQZ rs, label`      | `BEQ rs, r0, label`         |
 | `BNEZ rs, label`      | `BNE rs, r0, label`         |
 | `SEQZ rd, rs`         | `SLTU rd, r0, rs` (주의)    |
-| `LI rd, imm16/label`  | 필요 시 여러 명령으로 확장  |
+| `LI rd, imm16/label`  | 소형: `ADDI`(1) / bit6=0: `LUI+ORI`(2) / 기타: 5명령 폴백 |
 | `PUSH rs`             | `SW rs, 0(sp)` + `ADDI sp, sp, -2` |
 | `POP rd`              | `ADDI sp, sp, 2` + `LW rd, 0(sp)` |
 

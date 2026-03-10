@@ -127,6 +127,10 @@ function encodeJ(rd: number, imm9: number): number {
   return (Op.JAL << 12) | (rd << 9) | (imm9 & 0x1ff);
 }
 
+function encodeU(rd: number, imm9: number): number {
+  return (Op.LUI << 12) | (rd << 9) | (imm9 & 0x1ff);
+}
+
 function encodeSys(sub: number, reg = 0, csr = 0): number {
   return (Op.SYS << 12) | (sub << 9) | (reg << 6) | (csr & 0x3f);
 }
@@ -188,7 +192,10 @@ function instrByteCount(mnemonic: string, args: string[]): number {
     case "LI": {
       if (args.length >= 2) {
         const imm = parseImm(args[1]);
-        if (imm !== null && imm >= -32 && imm <= 31) return 2;
+        if (imm !== null) {
+          if (imm >= -32 && imm <= 31) return 2;
+          if ((toU16(imm) & 0x40) === 0) return 4; // LUI + ORI
+        }
       }
       return 10;
     }
@@ -394,8 +401,7 @@ export function assembleLine(
     case "ORI":
     case "XORI":
     case "SLLI":
-    case "SRLI":
-    case "SRAI": {
+    case "SRLI": {
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
       const rd = parseReg(args[0]);
       const rs1 = parseReg(args[1]);
@@ -409,9 +415,29 @@ export function assembleLine(
         XORI: Op.XORI,
         SLLI: Op.SLLI,
         SRLI: Op.SRLI,
-        SRAI: Op.SRAI,
       };
       emit(encodeI(opMap[mnemonic], rd, rs1, imm));
+      break;
+    }
+
+    case "SRAI": {
+      if (args.length !== 3) return fail("SRAI expects 3 args");
+      const rd = parseReg(args[0]);
+      const rs1 = parseReg(args[1]);
+      const shamt = resolveImm(args[2], constants);
+      if (rd === null || rs1 === null || shamt === null)
+        return fail("invalid operand");
+      if (shamt < 0 || shamt > 7) return fail("SRAI shamt must be 0-7");
+      emit(encodeSys(Sys.SRAI, rd, (rs1 << 3) | (shamt & 0x7)));
+      break;
+    }
+
+    case "LUI": {
+      if (args.length !== 2) return fail("LUI expects 2 args");
+      const rd = parseReg(args[0]);
+      const imm = resolveImm(args[1], constants, labels);
+      if (rd === null || imm === null) return fail("invalid operand");
+      emit(encodeU(rd, imm & 0x1ff));
       break;
     }
 
@@ -487,8 +513,7 @@ export function assembleLine(
       emit(encodeSys(Sys.ERET));
       break;
     case "FENCE":
-      emit(encodeSys(Sys.FENCE));
-      break;
+      return fail("FENCE is no longer supported; slot reassigned to SRAI");
 
     case "CSRR": {
       if (args.length !== 2) return fail("CSRR expects 2 args");
@@ -603,8 +628,15 @@ export function assembleLine(
         break;
       }
       const value = toU16(imm);
-      const signed = (value << 16) >> 16;
-      const top6 = signed >> 10;
+      if (isNumericLiteral && (value & 0x40) === 0) {
+        // 2-instruction form: LUI covers bits 15:7, ORI covers bits 5:0 (bit 6 = 0)
+        emit(encodeU(rd, (value >> 7) & 0x1ff));
+        emit(encodeI(Op.ORI, rd, rd, value & 0x3f));
+        break;
+      }
+      // Fallback 5-instruction form for bit 6 = 1 or symbolic args
+      const signedVal = (value << 16) >> 16;
+      const top6 = signedVal >> 10;
       const mid6 = (value >> 4) & 0x3f;
       const low4 = value & 0xf;
       emit(encodeI(Op.ADDI, rd, 0, top6));

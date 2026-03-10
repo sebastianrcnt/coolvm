@@ -674,15 +674,14 @@ describe("system instructions", () => {
     expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.BREAKPOINT);
   });
 
-  test("FENCE is a no-op", () => {
+  test("LUI loads upper 9 bits", () => {
     const cpu = vm(`
-      ADDI r1, r0, 1
-      FENCE
-      ADDI r1, r1, 1
+      LUI r1, 0x24
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[1]).toBe(2);
+    // 0x24 << 7 = 0x1200
+    expect(cpu.regs[1]).toBe(0x1200);
   });
 
   test("ERET restores pc and status from trap state", () => {
