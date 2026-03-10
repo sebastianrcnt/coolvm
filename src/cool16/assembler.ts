@@ -21,10 +21,18 @@ export interface AssembleError {
 const REG_NAMES: Record<string, number> = {
   r0: 0, r1: 1, r2: 2, r3: 3, r4: 4, r5: 5, r6: 6, r7: 7,
   sp: 6, lr: 7,
+
+  // RISC-V compatibility aliases (cool16 subset)
+  x0: 0, x1: 7, x2: 6, x3: 3, x4: 4, x5: 5, x6: 1, x7: 2,
+  zero: 0, ra: 7, gp: 3, tp: 4, t0: 5, t1: 1, t2: 2,
 };
 
 function parseReg(token: string): number | null {
-  const r = REG_NAMES[token.toLowerCase()];
+  const normalized = token.toLowerCase();
+  const r = REG_NAMES[normalized];
+  if (r !== undefined) return r;
+  // Explicitly reject unsupported RISC-V register range (x8..x31)
+  if (/^x\d+$/.test(normalized)) return null;
   return r !== undefined ? r : null;
 }
 
@@ -66,13 +74,12 @@ function toU16(value: number): number {
 
 // --- Memory operand parsing: imm6(base) ---
 
-function parseMemOperand(token: string): { imm: number; base: number } | null {
-  const match = token.match(/^(-?\d+|0x[0-9a-fA-F]+)\((\w+)\)$/);
+function parseMemOperand(token: string): { immToken: string; base: number } | null {
+  const match = token.match(/^([^()]+)\((\w+)\)$/);
   if (!match) return null;
-  const imm = parseImm(match[1]);
   const base = parseReg(match[2]);
-  if (imm === null || base === null) return null;
-  return { imm, base };
+  if (base === null) return null;
+  return { immToken: match[1].trim(), base };
 }
 
 // --- Encoding helpers ---
@@ -191,7 +198,7 @@ function encodeData(mnemonic: string, args: string[]): { words: number[]; error?
 
 export function tokenizeLine(raw: string): { label: string | null; mnemonic: string | null; args: string[] } {
   // Strip comments
-  const line = raw.split(";")[0].trim();
+  const line = raw.split(/[#;]/)[0].trim();
   if (!line) return { label: null, mnemonic: null, args: [] };
 
   let rest = line;
@@ -263,6 +270,17 @@ export function assembleLine(
   };
 
   switch (mnemonic) {
+    case "MV":
+      return assembleLine("MOV", args, addr, labels, constants);
+    case "J":
+      return assembleLine("JMP", args, addr, labels, constants);
+    case "BEQZ":
+      if (args.length !== 2) return fail("BEQZ expects 2 args");
+      return assembleLine("BEQ", [args[0], "r0", args[1]], addr, labels, constants);
+    case "BNEZ":
+      if (args.length !== 2) return fail("BNEZ expects 2 args");
+      return assembleLine("BNE", [args[0], "r0", args[1]], addr, labels, constants);
+
     case "ADD": case "SUB": case "AND": case "OR": case "XOR":
     case "SLT": case "SLTU": {
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
@@ -281,8 +299,19 @@ export function assembleLine(
     case "JALR": {
       if (args.length !== 2) return fail("JALR expects 2 args");
       const rd  = parseReg(args[0]);
+      if (rd === null) return fail("invalid register");
+
+      const mem = parseMemOperand(args[1]);
+      if (mem !== null) {
+        const imm = resolveImm(mem.immToken, constants, labels);
+        if (imm === null) return fail("invalid operand");
+        if (imm !== 0) return fail("cool16 jalr only supports 0(rs1)");
+        emit(encodeR(rd, mem.base, 0b111, Func.SPECIAL));
+        break;
+      }
+
       const rs1 = parseReg(args[1]);
-      if (rd === null || rs1 === null) return fail("invalid register");
+      if (rs1 === null) return fail("invalid register");
       emit(encodeR(rd, rs1, 0b111, Func.SPECIAL));
       break;
     }
@@ -307,7 +336,9 @@ export function assembleLine(
       const rd = parseReg(args[0]);
       const mem = parseMemOperand(args[1]);
       if (rd === null || mem === null) return fail("invalid operand");
-      emit(encodeM(mnemonic === "LW" ? Op.LW : Op.LB, rd, mem.base, mem.imm));
+      const imm = resolveImm(mem.immToken, constants, labels);
+      if (imm === null) return fail("invalid operand");
+      emit(encodeM(mnemonic === "LW" ? Op.LW : Op.LB, rd, mem.base, imm));
       break;
     }
 
@@ -316,7 +347,9 @@ export function assembleLine(
       const rs = parseReg(args[0]);
       const mem = parseMemOperand(args[1]);
       if (rs === null || mem === null) return fail("invalid operand");
-      emit(encodeM(mnemonic === "SW" ? Op.SW : Op.SB, rs, mem.base, mem.imm));
+      const imm = resolveImm(mem.immToken, constants, labels);
+      if (imm === null) return fail("invalid operand");
+      emit(encodeM(mnemonic === "SW" ? Op.SW : Op.SB, rs, mem.base, imm));
       break;
     }
 
@@ -331,7 +364,26 @@ export function assembleLine(
     }
 
     case "JAL": {
-      if (args.length !== 1) return fail("JAL expects 1 arg");
+      if (args.length === 1) {
+        const off = resolveJumpOff(args[0]);
+        if (off === null) return fail("invalid operand");
+        emit(encodeJ(off));
+        break;
+      }
+      if (args.length === 2) {
+        const rd = parseReg(args[0]);
+        const off = resolveJumpOff(args[1]);
+        if (rd === null || off === null) return fail("invalid operand");
+        if (rd !== 7) return fail("cool16 jal only supports rd=ra/x1");
+        emit(encodeJ(off));
+        break;
+      }
+      return fail("JAL expects 1 or 2 args");
+    }
+
+    case "CALL":
+    case "JMP": {
+      if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
       const off = resolveJumpOff(args[0]);
       if (off === null) return fail("invalid operand");
       emit(encodeJ(off));
@@ -441,15 +493,6 @@ export function assembleLine(
       emit(encodeI(Op.ADDI, 6, 6, 2));
       break;
     }
-    case "CALL":
-    case "JMP": {
-      if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
-      const off = resolveJumpOff(args[0]);
-      if (off === null) return fail("invalid operand");
-      emit(encodeJ(off));
-      break;
-    }
-
     case "LI": {
       if (args.length !== 2) return fail("LI expects 2 args");
       const rd  = parseReg(args[0]);

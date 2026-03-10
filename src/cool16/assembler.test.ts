@@ -592,3 +592,76 @@ describe("local label scoping", () => {
     expect(result.program[2] & 0x3F).toBe(0b111110);
   });
 });
+
+describe("RISC-V compatibility layer", () => {
+  test("tokenizeLine strips # comments", () => {
+    expect(tokenizeLine("add x1, x0, 1 # comment")).toEqual({
+      label: null,
+      mnemonic: "ADD",
+      args: ["x1", "x0", "1"],
+    });
+  });
+
+  test("RISC-V register aliases map onto cool16 registers", () => {
+    const withAlias = assemble("ADDI ra, sp, 1");
+    const withReg = assemble("ADDI r7, r6, 1");
+    expect(withAlias.program[0]).toBe(withReg.program[0]);
+  });
+
+  test("unsupported x8 register is rejected", () => {
+    const result = assemble("ADDI x8, x0, 1");
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].message).toContain("invalid operand");
+  });
+
+  test("mv and j pseudos are accepted", () => {
+    const mv = assemble("mv x1, x2");
+    const mov = assemble("MOV x1, x2");
+    expect(mv.program[0]).toBe(mov.program[0]);
+
+    const j = assemble("j target\n target: NOP");
+    const jmp = assemble("jmp target\n target: NOP");
+    expect(j.program[0]).toBe(jmp.program[0]);
+  });
+
+  test("beqz and bnez pseudos are accepted", () => {
+    const beqz = assemble("beqz t0, done\n done: NOP");
+    const beq = assemble("beq t0, r0, done\n done: NOP");
+    expect(beqz.program[0]).toBe(beq.program[0]);
+
+    const bnez = assemble("bnez t1, done\n done: NOP");
+    const bne = assemble("bne t1, r0, done\n done: NOP");
+    expect(bnez.program[0]).toBe(bne.program[0]);
+  });
+
+  test("jal supports rd,label form for ra/x1 only", () => {
+    const jalRa = assemble("jal ra, target\n target: NOP");
+    const jalOneArg = assemble("jal target\n target: NOP");
+    expect(jalRa.errors.length).toBe(0);
+    expect(jalRa.program[0]).toBe(jalOneArg.program[0]);
+
+    const jalX0 = assemble("jal x0, target\n target: NOP");
+    expect(jalX0.errors.length).toBe(1);
+    expect(jalX0.errors[0].message).toContain("rd=ra/x1");
+  });
+
+  test("jalr supports rd, 0(rs1) and rejects non-zero offset", () => {
+    const jalrMem = assemble("jalr x0, 0(ra)");
+    const ret = assemble("ret");
+    expect(jalrMem.errors.length).toBe(0);
+    expect(jalrMem.program[0]).toBe(ret.program[0]);
+
+    const invalid = assemble("jalr x0, 4(ra)");
+    expect(invalid.errors.length).toBe(1);
+    expect(invalid.errors[0].message).toContain("only supports 0(rs1)");
+  });
+
+  test("memory operands accept .equ constants", () => {
+    const result = assemble(`
+      .equ OFF, 4
+      lw x1, OFF(sp)
+    `);
+    expect(result.errors.length).toBe(0);
+    expect(result.program[0]).toBe(assemble("lw x1, 4(sp)").program[0]);
+  });
+});
