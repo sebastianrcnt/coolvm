@@ -2,7 +2,7 @@ import { Func, Op, Sys } from "./core";
 
 function sext(value: number, bits: number): number {
   const mask = 1 << (bits - 1);
-  return ((value ^ mask) - mask) & 0xFFFF;
+  return ((value ^ mask) - mask) & 0xffff;
 }
 
 function reg(n: number): string {
@@ -10,7 +10,7 @@ function reg(n: number): string {
 }
 
 function hex16(value: number): string {
-  return `0x${(value & 0xFFFF).toString(16).padStart(4, "0")}`;
+  return `0x${(value & 0xffff).toString(16).padStart(4, "0")}`;
 }
 
 function signed(value: number, bits: number): number {
@@ -18,7 +18,7 @@ function signed(value: number, bits: number): number {
 }
 
 export function disassemble(instr: number, addr?: number): string {
-  const op = (instr >> 12) & 0xF;
+  const op = (instr >> 12) & 0xf;
 
   switch (op) {
     case Op.ALU: {
@@ -52,7 +52,7 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.SRAI: {
       const rd = (instr >> 9) & 0x7;
       const rs1 = (instr >> 6) & 0x7;
-      const imm = instr & 0x3F;
+      const imm = instr & 0x3f;
       const mnemonic: Record<number, string> = {
         [Op.ADDI]: "ADDI",
         [Op.ANDI]: "ANDI",
@@ -72,7 +72,7 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.SB: {
       const regField = (instr >> 9) & 0x7;
       const base = (instr >> 6) & 0x7;
-      const off = signed(instr & 0x3F, 6);
+      const off = signed(instr & 0x3f, 6);
       const mnemonic: Record<number, string> = {
         [Op.LW]: "LW",
         [Op.SW]: "SW",
@@ -83,7 +83,7 @@ export function disassemble(instr: number, addr?: number): string {
     }
 
     case Op.JAL: {
-      const off = signed(instr & 0xFFF, 12);
+      const off = signed(instr & 0xfff, 12);
       if (addr !== undefined) {
         return `JAL ${hex16(addr + 2 + (off << 1))}`;
       }
@@ -93,15 +93,30 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.SYS: {
       const sub = (instr >> 9) & 0x7;
       const regField = (instr >> 6) & 0x7;
-      const csr = instr & 0x3F;
+      const csr = instr & 0x3f;
       switch (sub) {
-        case Sys.ECALL: return regField === 0 && csr === 0 ? "ECALL" : `.word ${hex16(instr)} ; illegal`;
-        case Sys.EBREAK: return regField === 0 && csr === 0 ? "EBREAK" : `.word ${hex16(instr)} ; illegal`;
-        case Sys.ERET: return regField === 0 && csr === 0 ? "ERET" : `.word ${hex16(instr)} ; illegal`;
-        case Sys.FENCE: return regField === 0 && csr === 0 ? "FENCE" : `.word ${hex16(instr)} ; illegal`;
-        case Sys.CSRR: return `CSRR ${reg(regField)}, 0x${csr.toString(16).padStart(2, "0")}`;
-        case Sys.CSRW: return `CSRW 0x${csr.toString(16).padStart(2, "0")}, ${reg(regField)}`;
-        default: return `.word ${hex16(instr)} ; illegal`;
+        case Sys.ECALL:
+          return regField === 0 && csr === 0
+            ? "ECALL"
+            : `.word ${hex16(instr)} ; illegal`;
+        case Sys.EBREAK:
+          return regField === 0 && csr === 0
+            ? "EBREAK"
+            : `.word ${hex16(instr)} ; illegal`;
+        case Sys.ERET:
+          return regField === 0 && csr === 0
+            ? "ERET"
+            : `.word ${hex16(instr)} ; illegal`;
+        case Sys.FENCE:
+          return regField === 0 && csr === 0
+            ? "FENCE"
+            : `.word ${hex16(instr)} ; illegal`;
+        case Sys.CSRR:
+          return `CSRR ${reg(regField)}, 0x${csr.toString(16).padStart(2, "0")}`;
+        case Sys.CSRW:
+          return `CSRW 0x${csr.toString(16).padStart(2, "0")}, ${reg(regField)}`;
+        default:
+          return `.word ${hex16(instr)} ; illegal`;
       }
     }
 
@@ -109,7 +124,7 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.BNE: {
       const rs1 = (instr >> 9) & 0x7;
       const rs2 = (instr >> 6) & 0x7;
-      const off = signed(instr & 0x3F, 6);
+      const off = signed(instr & 0x3f, 6);
       const mnemonic = op === Op.BEQ ? "BEQ" : "BNE";
       if (addr !== undefined) {
         return `${mnemonic} ${reg(rs1)}, ${reg(rs2)}, ${hex16(addr + 2 + (off << 1))}`;

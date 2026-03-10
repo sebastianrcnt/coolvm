@@ -53,8 +53,8 @@ async function main() {
         const syscall = v.regs[1];
         if (syscall === 0) {
           // putchar(r2): write low byte to stdout, then resume after ECALL
-          process.stdout.write(Buffer.from([v.regs[2] & 0xFF]));
-          v.pc = (v.csrs[Csr.EPC] + 2) & 0xFFFF;
+          process.stdout.write(Buffer.from([v.regs[2] & 0xff]));
+          v.pc = (v.csrs[Csr.EPC] + 2) & 0xffff;
         } else {
           // exit(r2) or any unrecognized syscall: halt
           v.halted = true;
@@ -65,7 +65,9 @@ async function main() {
         const startCycles = vm.cycles;
         while (vm.cycles - startCycles < maxCycles) {
           const step = vm.step();
-          console.log(`[${step.pc.toString(16).padStart(4, "0")}] ${step.instr.toString(16).padStart(4, "0")}  ${disassemble(step.instr, step.pc)}`);
+          console.log(
+            `[${step.pc.toString(16).padStart(4, "0")}] ${step.instr.toString(16).padStart(4, "0")}  ${disassemble(step.instr, step.pc)}`,
+          );
           if (!step.running) {
             break;
           }
@@ -110,11 +112,13 @@ async function main() {
       }
       const bytes = new Uint8Array(await Bun.file(positional[0]).arrayBuffer());
       for (let i = 0; i < bytes.length; i += 2) {
-        const addr = i & 0xFFFF;
+        const addr = i & 0xffff;
         const lo = bytes[i] ?? 0;
         const hi = bytes[i + 1] ?? 0;
         const word = lo | (hi << 8);
-        console.log(`${addr.toString(16).padStart(4, "0")}: ${word.toString(16).padStart(4, "0")}  ${disassemble(word, addr)}`);
+        console.log(
+          `${addr.toString(16).padStart(4, "0")}: ${word.toString(16).padStart(4, "0")}  ${disassemble(word, addr)}`,
+        );
       }
       break;
     }

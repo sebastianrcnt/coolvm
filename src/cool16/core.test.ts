@@ -6,11 +6,15 @@ import { assemble } from "./assembler";
 function vm(source: string): Cool16 {
   const result = assemble(source);
   if (result.errors.length > 0) {
-    throw new Error(result.errors.map((e) => `line ${e.line}: ${e.message}`).join("\n"));
+    throw new Error(
+      result.errors.map((e) => `line ${e.line}: ${e.message}`).join("\n"),
+    );
   }
   const cpu = new Cool16();
   cpu.load(result.program);
-  cpu.onEcall = (v) => { v.halted = true; };
+  cpu.onEcall = (v) => {
+    v.halted = true;
+  };
   return cpu;
 }
 
@@ -92,7 +96,7 @@ describe("R-format ALU", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[3]).toBe(0xFFFE); // -2 as u16
+    expect(cpu.regs[3]).toBe(0xfffe); // -2 as u16
   });
 
   test("AND", () => {
@@ -103,7 +107,7 @@ describe("R-format ALU", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[3]).toBe(0x0F);
+    expect(cpu.regs[3]).toBe(0x0f);
   });
 
   test("OR", () => {
@@ -114,7 +118,7 @@ describe("R-format ALU", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[3]).toBe(0x0F);
+    expect(cpu.regs[3]).toBe(0x0f);
   });
 
   test("XOR", () => {
@@ -125,7 +129,7 @@ describe("R-format ALU", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[3]).toBe(0x0C);
+    expect(cpu.regs[3]).toBe(0x0c);
   });
 
   test("SLT signed comparison", () => {
@@ -166,7 +170,7 @@ describe("I-format immediates", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[1]).toBe(0xFFFB); // -5 as u16
+    expect(cpu.regs[1]).toBe(0xfffb); // -5 as u16
   });
 
   test("ANDI zero-extends", () => {
@@ -176,7 +180,7 @@ describe("I-format immediates", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[2]).toBe(0x3F);
+    expect(cpu.regs[2]).toBe(0x3f);
   });
 
   test("ORI zero-extends", () => {
@@ -216,7 +220,7 @@ describe("I-format immediates", () => {
     `);
     cpu.run();
     // 0xFFFF >>> 8 = 0x00FF
-    expect(cpu.regs[2]).toBe(0xFF);
+    expect(cpu.regs[2]).toBe(0xff);
   });
 
   test("SRAI arithmetic right shift", () => {
@@ -227,7 +231,7 @@ describe("I-format immediates", () => {
     `);
     cpu.run();
     // -8 >> 2 = -2 = 0xFFFE
-    expect(cpu.regs[2]).toBe(0xFFFE);
+    expect(cpu.regs[2]).toBe(0xfffe);
   });
 });
 
@@ -275,7 +279,9 @@ describe("memory operations", () => {
   test("LB sign-extends", () => {
     // Build address 0x80 via shift, then manually place 0x80 byte there
     const cpu = new Cool16();
-    cpu.onEcall = (v) => { v.halted = true; };
+    cpu.onEcall = (v) => {
+      v.halted = true;
+    };
     cpu.mem[0x80] = 0x80;
     const result = assemble(`
       ADDI r2, r0, 8
@@ -286,7 +292,7 @@ describe("memory operations", () => {
     cpu.load(result.program);
     cpu.run();
     // 0x80 sign-extended to 16 bits = 0xFF80
-    expect(cpu.regs[1]).toBe(0xFF80);
+    expect(cpu.regs[1]).toBe(0xff80);
   });
 
   test("LW misaligned raises trap", () => {
@@ -423,7 +429,7 @@ describe("JAL and JALR", () => {
       JALR r0, r7
     `);
     cpu.run();
-    expect(cpu.regs[1]).toBe(0x0A);
+    expect(cpu.regs[1]).toBe(0x0a);
   });
 });
 
@@ -449,7 +455,7 @@ describe("pseudo-instructions", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[2]).toBe(0x1A);
+    expect(cpu.regs[2]).toBe(0x1a);
   });
 
   test("RET returns to caller", () => {
@@ -479,7 +485,7 @@ describe("pseudo-instructions", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[1]).toBe(0xABCD);
+    expect(cpu.regs[1]).toBe(0xabcd);
   });
 
   test("NEG computes two's complement", () => {
@@ -489,7 +495,7 @@ describe("pseudo-instructions", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[2]).toBe(0xFFFB);
+    expect(cpu.regs[2]).toBe(0xfffb);
   });
 
   test("NOT flips all 16 bits", () => {
@@ -499,7 +505,7 @@ describe("pseudo-instructions", () => {
       ECALL
     `);
     cpu.run();
-    expect(cpu.regs[2]).toBe(0xEDCB);
+    expect(cpu.regs[2]).toBe(0xedcb);
   });
 
   test("JR jumps without linking", () => {
@@ -616,7 +622,9 @@ describe("system instructions", () => {
       EBREAK
     `);
     let hit = false;
-    cpu.onEbreak = () => { hit = true; };
+    cpu.onEbreak = () => {
+      hit = true;
+    };
     cpu.run(1);
     expect(hit).toBe(true);
     expect(cpu.csrs[Csr.CAUSE]).toBe(Cause.BREAKPOINT);

@@ -1,5 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { assemble, assembleLine, tokenizeLine, parseStringLiteral } from "./assembler";
+import {
+  assemble,
+  assembleLine,
+  tokenizeLine,
+  parseStringLiteral,
+} from "./assembler";
 
 describe("assembler basics", () => {
   test("tokenizeLine exports label, mnemonic, and args", () => {
@@ -141,8 +146,8 @@ describe("M-format encoding", () => {
   test("LB and SB use correct opcodes", () => {
     const lb = assemble("LB r1, 0(r2)");
     const sb = assemble("SB r1, 0(r2)");
-    expect((lb.program[0] >> 12) & 0xF).toBe(0xC);
-    expect((sb.program[0] >> 12) & 0xF).toBe(0xD);
+    expect((lb.program[0] >> 12) & 0xf).toBe(0xc);
+    expect((sb.program[0] >> 12) & 0xf).toBe(0xd);
   });
 });
 
@@ -157,7 +162,7 @@ describe("B-format encoding", () => {
     expect(result.errors.length).toBe(0);
     // BEQ at addr 0, target at addr 4
     // offset = (4 - (0+2)) >> 1 = 1
-    const imm6 = result.program[0] & 0x3F;
+    const imm6 = result.program[0] & 0x3f;
     expect(imm6).toBe(1);
   });
 
@@ -170,7 +175,7 @@ describe("B-format encoding", () => {
     expect(result.errors.length).toBe(0);
     // BEQ at addr 2, loop at addr 0
     // offset = (0 - (2+2)) >> 1 = -2
-    const imm6 = result.program[1] & 0x3F;
+    const imm6 = result.program[1] & 0x3f;
     // -2 in 6-bit two's complement = 0b111110 = 62
     expect(imm6).toBe(0b111110);
   });
@@ -187,7 +192,7 @@ describe("J-format encoding", () => {
     expect(result.errors.length).toBe(0);
     // JAL at addr 0, target at addr 4
     // offset = (4 - 2) >> 1 = 1
-    const imm12 = result.program[0] & 0xFFF;
+    const imm12 = result.program[0] & 0xfff;
     expect(imm12).toBe(1);
   });
 });
@@ -245,17 +250,14 @@ describe("pseudo-instructions", () => {
 
   test("NEG r2, r1 encodes as SUB r2, r0, r1", () => {
     const result = assemble("NEG r2, r1");
-    expect(result.program).toEqual(new Uint16Array([
-      0b0000_010_000_001_001,
-    ]));
+    expect(result.program).toEqual(new Uint16Array([0b0000_010_000_001_001]));
   });
 
   test("NOT r2, r1 expands to negation-minus-one sequence", () => {
     const result = assemble("NOT r2, r1");
-    expect(result.program).toEqual(new Uint16Array([
-      0b0000_010_000_001_001,
-      0b0001_010_010_111111,
-    ]));
+    expect(result.program).toEqual(
+      new Uint16Array([0b0000_010_000_001_001, 0b0001_010_010_111111]),
+    );
   });
 
   test("JR r3 encodes as JALR r0, r3", () => {
@@ -271,33 +273,28 @@ describe("pseudo-instructions", () => {
 
   test("SEQZ r2, r1 expands to SLTU/XORI", () => {
     const result = assemble("SEQZ r2, r1");
-    expect(result.program).toEqual(new Uint16Array([
-      0b0000_010_000_001_110,
-      0b0100_010_010_000001,
-    ]));
+    expect(result.program).toEqual(
+      new Uint16Array([0b0000_010_000_001_110, 0b0100_010_010_000001]),
+    );
   });
 
   test("SNEZ r2, r1 expands to SLTU r2, r0, r1", () => {
     const result = assemble("SNEZ r2, r1");
-    expect(result.program).toEqual(new Uint16Array([
-      0b0000_010_000_001_110,
-    ]));
+    expect(result.program).toEqual(new Uint16Array([0b0000_010_000_001_110]));
   });
 
   test("PUSH r3 expands to stack decrement and store", () => {
     const result = assemble("PUSH r3");
-    expect(result.program).toEqual(new Uint16Array([
-      0b0001_110_110_111110,
-      0b1001_011_110_000000,
-    ]));
+    expect(result.program).toEqual(
+      new Uint16Array([0b0001_110_110_111110, 0b1001_011_110_000000]),
+    );
   });
 
   test("POP r3 expands to load and stack increment", () => {
     const result = assemble("POP r3");
-    expect(result.program).toEqual(new Uint16Array([
-      0b1000_011_110_000000,
-      0b0001_110_110_000010,
-    ]));
+    expect(result.program).toEqual(
+      new Uint16Array([0b1000_011_110_000000, 0b0001_110_110_000010]),
+    );
   });
 
   test("CALL label encodes as JAL label", () => {
@@ -308,12 +305,14 @@ describe("pseudo-instructions", () => {
       NOP
     `);
     expect(result.errors.length).toBe(0);
-    expect(result.program[0]).toBe(assemble(`
+    expect(result.program[0]).toBe(
+      assemble(`
       JAL target
       NOP
     target:
       NOP
-    `).program[0]);
+    `).program[0],
+    );
   });
 
   test("JMP label encodes as JAL label", () => {
@@ -324,38 +323,39 @@ describe("pseudo-instructions", () => {
       NOP
     `);
     expect(result.errors.length).toBe(0);
-    expect(result.program[0]).toBe(assemble(`
+    expect(result.program[0]).toBe(
+      assemble(`
       JAL target
       NOP
     target:
       NOP
-    `).program[0]);
+    `).program[0],
+    );
   });
 
   test("LI r1, 0xABCD expands to a five-instruction sequence", () => {
     const result = assemble("LI r1, 0xABCD");
     expect(result.errors.length).toBe(0);
     expect(result.program.length).toBe(5);
-    expect(result.program).toEqual(new Uint16Array([
-      0b0001_001_000_101010,
-      0b0101_001_001_000110,
-      0b0011_001_001_111100,
-      0b0101_001_001_000100,
-      0b0011_001_001_001101,
-    ]));
+    expect(result.program).toEqual(
+      new Uint16Array([
+        0b0001_001_000_101010, 0b0101_001_001_000110, 0b0011_001_001_111100,
+        0b0101_001_001_000100, 0b0011_001_001_001101,
+      ]),
+    );
   });
 });
 
 describe("register aliases", () => {
   test("sp maps to r6", () => {
     const withAlias = assemble("ADDI sp, sp, -2");
-    const withReg   = assemble("ADDI r6, r6, -2");
+    const withReg = assemble("ADDI r6, r6, -2");
     expect(withAlias.program[0]).toBe(withReg.program[0]);
   });
 
   test("lr maps to r7", () => {
     const withAlias = assemble("JALR r0, lr");
-    const withReg   = assemble("JALR r0, r7");
+    const withReg = assemble("JALR r0, r7");
     expect(withAlias.program[0]).toBe(withReg.program[0]);
   });
 });
@@ -457,7 +457,7 @@ describe(".byte directive", () => {
     expect(result.errors.length).toBe(0);
     expect(result.program.length).toBe(2);
     expect(result.program[0]).toBe(0x6548); // 0x48 lo, 0x65 hi
-    expect(result.program[1]).toBe(0x6C6C);
+    expect(result.program[1]).toBe(0x6c6c);
   });
 
   test(".byte with odd count pads with 0x00", () => {
@@ -488,7 +488,9 @@ describe(".ascii directive", () => {
   });
 
   test("parseStringLiteral handles escape sequences", () => {
-    expect(parseStringLiteral('"\\n\\t\\r\\0\\\\"')).toEqual([10, 9, 13, 0, 92]);
+    expect(parseStringLiteral('"\\n\\t\\r\\0\\\\"')).toEqual([
+      10, 9, 13, 0, 92,
+    ]);
   });
 
   test(".ascii emits string bytes as little-endian u16 words", () => {
@@ -509,7 +511,7 @@ describe(".ascii directive", () => {
     const result = assemble('.ascii "\\n\\0"');
     expect(result.errors.length).toBe(0);
     expect(result.program.length).toBe(1);
-    expect(result.program[0]).toBe(0x000A); // 0x0A lo, 0x00 hi
+    expect(result.program[0]).toBe(0x000a); // 0x0A lo, 0x00 hi
   });
 
   test(".ascii with comma in string assembles correctly", () => {
@@ -557,7 +559,7 @@ describe("local label scoping", () => {
     expect(result.errors.length).toBe(0);
     // .start is at addr 0, BEQ is at addr 2
     // offset = (0 - (2+2)) >> 1 = -2, which is 0b111110 in 6-bit
-    const imm6 = result.program[1] & 0x3F;
+    const imm6 = result.program[1] & 0x3f;
     expect(imm6).toBe(0b111110);
   });
 
@@ -587,9 +589,9 @@ describe("local label scoping", () => {
     `);
     expect(result.errors.length).toBe(0);
     // BEQ at addr 0 → .done at addr 6, offset = (6-(0+2))>>1 = 2
-    expect(result.program[0] & 0x3F).toBe(2);
+    expect(result.program[0] & 0x3f).toBe(2);
     // BEQ at addr 4 → .loop at addr 2, offset = (2-(4+2))>>1 = -2 = 0b111110
-    expect(result.program[2] & 0x3F).toBe(0b111110);
+    expect(result.program[2] & 0x3f).toBe(0b111110);
   });
 });
 

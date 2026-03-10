@@ -19,12 +19,33 @@ export interface AssembleError {
 // --- Register parsing ---
 
 const REG_NAMES: Record<string, number> = {
-  r0: 0, r1: 1, r2: 2, r3: 3, r4: 4, r5: 5, r6: 6, r7: 7,
-  sp: 6, lr: 7,
+  r0: 0,
+  r1: 1,
+  r2: 2,
+  r3: 3,
+  r4: 4,
+  r5: 5,
+  r6: 6,
+  r7: 7,
+  sp: 6,
+  lr: 7,
 
   // RISC-V compatibility aliases (cool16 subset)
-  x0: 0, x1: 7, x2: 6, x3: 3, x4: 4, x5: 5, x6: 1, x7: 2,
-  zero: 0, ra: 7, gp: 3, tp: 4, t0: 5, t1: 1, t2: 2,
+  x0: 0,
+  x1: 7,
+  x2: 6,
+  x3: 3,
+  x4: 4,
+  x5: 5,
+  x6: 1,
+  x7: 2,
+  zero: 0,
+  ra: 7,
+  gp: 3,
+  tp: 4,
+  t0: 5,
+  t1: 1,
+  t2: 2,
 };
 
 function parseReg(token: string): number | null {
@@ -69,12 +90,14 @@ function resolveImm(
 }
 
 function toU16(value: number): number {
-  return value & 0xFFFF;
+  return value & 0xffff;
 }
 
 // --- Memory operand parsing: imm6(base) ---
 
-function parseMemOperand(token: string): { immToken: string; base: number } | null {
+function parseMemOperand(
+  token: string,
+): { immToken: string; base: number } | null {
   const match = token.match(/^([^()]+)\((\w+)\)$/);
   if (!match) return null;
   const base = parseReg(match[2]);
@@ -89,23 +112,23 @@ function encodeR(rd: number, rs1: number, rs2: number, func: number): number {
 }
 
 function encodeI(op: number, rd: number, rs1: number, imm6: number): number {
-  return (op << 12) | (rd << 9) | (rs1 << 6) | (imm6 & 0x3F);
+  return (op << 12) | (rd << 9) | (rs1 << 6) | (imm6 & 0x3f);
 }
 
 function encodeM(op: number, reg: number, base: number, imm6: number): number {
-  return (op << 12) | (reg << 9) | (base << 6) | (imm6 & 0x3F);
+  return (op << 12) | (reg << 9) | (base << 6) | (imm6 & 0x3f);
 }
 
 function encodeB(op: number, rs1: number, rs2: number, imm6: number): number {
-  return (op << 12) | (rs1 << 9) | (rs2 << 6) | (imm6 & 0x3F);
+  return (op << 12) | (rs1 << 9) | (rs2 << 6) | (imm6 & 0x3f);
 }
 
 function encodeJ(imm12: number): number {
-  return (Op.JAL << 12) | (imm12 & 0xFFF);
+  return (Op.JAL << 12) | (imm12 & 0xfff);
 }
 
 function encodeSys(sub: number, reg = 0, csr = 0): number {
-  return (Op.SYS << 12) | (sub << 9) | (reg << 6) | (csr & 0x3F);
+  return (Op.SYS << 12) | (sub << 9) | (reg << 6) | (csr & 0x3f);
 }
 
 // --- String literal parsing ---
@@ -121,13 +144,27 @@ export function parseStringLiteral(token: string): number[] {
   while (i < s.length) {
     if (s[i] === "\\" && i + 1 < s.length) {
       switch (s[i + 1]) {
-        case "n":  bytes.push(10); break;
-        case "t":  bytes.push(9);  break;
-        case "r":  bytes.push(13); break;
-        case "0":  bytes.push(0);  break;
-        case "\\": bytes.push(92); break;
-        case '"':  bytes.push(34); break;
-        default:   bytes.push(s.charCodeAt(i + 1)); break;
+        case "n":
+          bytes.push(10);
+          break;
+        case "t":
+          bytes.push(9);
+          break;
+        case "r":
+          bytes.push(13);
+          break;
+        case "0":
+          bytes.push(0);
+          break;
+        case "\\":
+          bytes.push(92);
+          break;
+        case '"':
+          bytes.push(34);
+          break;
+        default:
+          bytes.push(s.charCodeAt(i + 1));
+          break;
       }
       i += 2;
     } else {
@@ -143,7 +180,10 @@ export function parseStringLiteral(token: string): number[] {
 // Returns the number of bytes an instruction or directive will emit.
 function instrByteCount(mnemonic: string, args: string[]): number {
   switch (mnemonic) {
-    case "NOT": case "SEQZ": case "PUSH": case "POP":
+    case "NOT":
+    case "SEQZ":
+    case "PUSH":
+    case "POP":
       return 4;
     case "LI": {
       if (args.length >= 2) {
@@ -167,14 +207,17 @@ function instrByteCount(mnemonic: string, args: string[]): number {
 // --- Data directive encoding ---
 
 // Encodes .byte or .ascii directives into u16 word arrays (little-endian pairs).
-function encodeData(mnemonic: string, args: string[]): { words: number[]; error?: string } {
+function encodeData(
+  mnemonic: string,
+  args: string[],
+): { words: number[]; error?: string } {
   const bytes: number[] = [];
 
   if (mnemonic === ".BYTE") {
     for (const arg of args) {
       const v = parseImm(arg.trim());
       if (v === null) return { words: [], error: `invalid byte value: ${arg}` };
-      bytes.push(v & 0xFF);
+      bytes.push(v & 0xff);
     }
   } else if (mnemonic === ".ASCII") {
     const str = args.join(","); // rejoin in case string was split on commas
@@ -196,7 +239,11 @@ function encodeData(mnemonic: string, args: string[]): { words: number[]; error?
 
 // --- Tokenizer ---
 
-export function tokenizeLine(raw: string): { label: string | null; mnemonic: string | null; args: string[] } {
+export function tokenizeLine(raw: string): {
+  label: string | null;
+  mnemonic: string | null;
+  args: string[];
+} {
   // Strip comments
   const line = raw.split(/[#;]/)[0].trim();
   if (!line) return { label: null, mnemonic: null, args: [] };
@@ -248,8 +295,11 @@ export function assembleLine(
   constants: Map<string, number> = new Map(),
 ): { words: number[]; error?: string } {
   const words: number[] = [];
-  const emit = (word: number) => words.push(word & 0xFFFF);
-  const fail = (error: string) => ({ words: words.length > 0 ? words : [0], error });
+  const emit = (word: number) => words.push(word & 0xffff);
+  const fail = (error: string) => ({
+    words: words.length > 0 ? words : [0],
+    error,
+  });
 
   const resolveBranchOff = (token: string): number | null => {
     const label = labels.get(token);
@@ -276,21 +326,44 @@ export function assembleLine(
       return assembleLine("JMP", args, addr, labels, constants);
     case "BEQZ":
       if (args.length !== 2) return fail("BEQZ expects 2 args");
-      return assembleLine("BEQ", [args[0], "r0", args[1]], addr, labels, constants);
+      return assembleLine(
+        "BEQ",
+        [args[0], "r0", args[1]],
+        addr,
+        labels,
+        constants,
+      );
     case "BNEZ":
       if (args.length !== 2) return fail("BNEZ expects 2 args");
-      return assembleLine("BNE", [args[0], "r0", args[1]], addr, labels, constants);
+      return assembleLine(
+        "BNE",
+        [args[0], "r0", args[1]],
+        addr,
+        labels,
+        constants,
+      );
 
-    case "ADD": case "SUB": case "AND": case "OR": case "XOR":
-    case "SLT": case "SLTU": {
+    case "ADD":
+    case "SUB":
+    case "AND":
+    case "OR":
+    case "XOR":
+    case "SLT":
+    case "SLTU": {
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
-      const rd  = parseReg(args[0]);
+      const rd = parseReg(args[0]);
       const rs1 = parseReg(args[1]);
       const rs2 = parseReg(args[2]);
-      if (rd === null || rs1 === null || rs2 === null) return fail("invalid register");
+      if (rd === null || rs1 === null || rs2 === null)
+        return fail("invalid register");
       const funcMap: Record<string, number> = {
-        ADD: Func.ADD, SUB: Func.SUB, AND: Func.AND, OR: Func.OR,
-        XOR: Func.XOR, SLT: Func.SLT, SLTU: Func.SLTU,
+        ADD: Func.ADD,
+        SUB: Func.SUB,
+        AND: Func.AND,
+        OR: Func.OR,
+        XOR: Func.XOR,
+        SLT: Func.SLT,
+        SLTU: Func.SLTU,
       };
       emit(encodeR(rd, rs1, rs2, funcMap[mnemonic]));
       break;
@@ -298,7 +371,7 @@ export function assembleLine(
 
     case "JALR": {
       if (args.length !== 2) return fail("JALR expects 2 args");
-      const rd  = parseReg(args[0]);
+      const rd = parseReg(args[0]);
       if (rd === null) return fail("invalid register");
 
       const mem = parseMemOperand(args[1]);
@@ -316,22 +389,34 @@ export function assembleLine(
       break;
     }
 
-    case "ADDI": case "ANDI": case "ORI": case "XORI":
-    case "SLLI": case "SRLI": case "SRAI": {
+    case "ADDI":
+    case "ANDI":
+    case "ORI":
+    case "XORI":
+    case "SLLI":
+    case "SRLI":
+    case "SRAI": {
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
-      const rd  = parseReg(args[0]);
+      const rd = parseReg(args[0]);
       const rs1 = parseReg(args[1]);
       const imm = resolveImm(args[2], constants);
-      if (rd === null || rs1 === null || imm === null) return fail("invalid operand");
+      if (rd === null || rs1 === null || imm === null)
+        return fail("invalid operand");
       const opMap: Record<string, number> = {
-        ADDI: Op.ADDI, ANDI: Op.ANDI, ORI: Op.ORI, XORI: Op.XORI,
-        SLLI: Op.SLLI, SRLI: Op.SRLI, SRAI: Op.SRAI,
+        ADDI: Op.ADDI,
+        ANDI: Op.ANDI,
+        ORI: Op.ORI,
+        XORI: Op.XORI,
+        SLLI: Op.SLLI,
+        SRLI: Op.SRLI,
+        SRAI: Op.SRAI,
       };
       emit(encodeI(opMap[mnemonic], rd, rs1, imm));
       break;
     }
 
-    case "LW": case "LB": {
+    case "LW":
+    case "LB": {
       if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
       const rd = parseReg(args[0]);
       const mem = parseMemOperand(args[1]);
@@ -342,7 +427,8 @@ export function assembleLine(
       break;
     }
 
-    case "SW": case "SB": {
+    case "SW":
+    case "SB": {
       if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
       const rs = parseReg(args[0]);
       const mem = parseMemOperand(args[1]);
@@ -353,12 +439,14 @@ export function assembleLine(
       break;
     }
 
-    case "BEQ": case "BNE": {
+    case "BEQ":
+    case "BNE": {
       if (args.length !== 3) return fail(`${mnemonic} expects 3 args`);
       const rs1 = parseReg(args[0]);
       const rs2 = parseReg(args[1]);
       const off = resolveBranchOff(args[2]);
-      if (rs1 === null || rs2 === null || off === null) return fail("invalid operand");
+      if (rs1 === null || rs2 === null || off === null)
+        return fail("invalid operand");
       emit(encodeB(mnemonic === "BEQ" ? Op.BEQ : Op.BNE, rs1, rs2, off));
       break;
     }
@@ -390,14 +478,22 @@ export function assembleLine(
       break;
     }
 
-    case "ECALL": emit(encodeSys(Sys.ECALL)); break;
-    case "EBREAK": emit(encodeSys(Sys.EBREAK)); break;
-    case "ERET": emit(encodeSys(Sys.ERET)); break;
-    case "FENCE": emit(encodeSys(Sys.FENCE)); break;
+    case "ECALL":
+      emit(encodeSys(Sys.ECALL));
+      break;
+    case "EBREAK":
+      emit(encodeSys(Sys.EBREAK));
+      break;
+    case "ERET":
+      emit(encodeSys(Sys.ERET));
+      break;
+    case "FENCE":
+      emit(encodeSys(Sys.FENCE));
+      break;
 
     case "CSRR": {
       if (args.length !== 2) return fail("CSRR expects 2 args");
-      const rd  = parseReg(args[0]);
+      const rd = parseReg(args[0]);
       const csr = resolveImm(args[1], constants);
       if (rd === null || csr === null) return fail("invalid operand");
       emit(encodeSys(Sys.CSRR, rd, csr));
@@ -407,7 +503,7 @@ export function assembleLine(
     case "CSRW": {
       if (args.length !== 2) return fail("CSRW expects 2 args");
       const csr = resolveImm(args[0], constants);
-      const rs  = parseReg(args[1]);
+      const rs = parseReg(args[1]);
       if (csr === null || rs === null) return fail("invalid operand");
       emit(encodeSys(Sys.CSRW, rs, csr));
       break;
@@ -456,7 +552,8 @@ export function assembleLine(
       const rd = parseReg(args[0]);
       const rs = parseReg(args[1]);
       const imm = resolveImm(args[2], constants);
-      if (rd === null || rs === null || imm === null) return fail("invalid operand");
+      if (rd === null || rs === null || imm === null)
+        return fail("invalid operand");
       emit(encodeI(Op.ADDI, rd, rs, -imm));
       break;
     }
@@ -495,7 +592,7 @@ export function assembleLine(
     }
     case "LI": {
       if (args.length !== 2) return fail("LI expects 2 args");
-      const rd  = parseReg(args[0]);
+      const rd = parseReg(args[0]);
       const imm = resolveImm(args[1], constants, labels);
       if (rd === null || imm === null) return fail("invalid operand");
       // Short form only when arg is a numeric literal in range.
@@ -509,8 +606,8 @@ export function assembleLine(
       const value = toU16(imm);
       const signed = (value << 16) >> 16;
       const top6 = signed >> 10;
-      const mid6 = (value >> 4) & 0x3F;
-      const low4 = value & 0xF;
+      const mid6 = (value >> 4) & 0x3f;
+      const low4 = value & 0xf;
       emit(encodeI(Op.ADDI, rd, 0, top6));
       emit(encodeI(Op.SLLI, rd, rd, 6));
       emit(encodeI(Op.ORI, rd, rd, mid6));
@@ -568,14 +665,23 @@ export function assemble(source: string): AssembleResult {
           if (val !== null) {
             constants.set(args[0].trim(), val);
           } else {
-            errors.push({ line: i + 1, message: `invalid constant value: ${args[1]}` });
+            errors.push({
+              line: i + 1,
+              message: `invalid constant value: ${args[1]}`,
+            });
           }
         } else {
           errors.push({ line: i + 1, message: ".equ expects NAME, value" });
         }
       } else {
         const isData = mnemonic === ".BYTE" || mnemonic === ".ASCII";
-        instructions.push({ lineNum: i + 1, mnemonic, args, isData, prefix: currentPrefix });
+        instructions.push({
+          lineNum: i + 1,
+          mnemonic,
+          args,
+          isData,
+          prefix: currentPrefix,
+        });
         addr += instrByteCount(mnemonic, args);
       }
     }
@@ -597,13 +703,19 @@ export function assemble(source: string): AssembleResult {
       if (result.error) {
         errors.push({ line: lineNum, message: result.error });
       }
-      words.push(...result.words.map((w) => w & 0xFFFF));
+      words.push(...result.words.map((w) => w & 0xffff));
     } else {
-      const result = assembleLine(mnemonic, expandedArgs, currentAddr, labels, constants);
+      const result = assembleLine(
+        mnemonic,
+        expandedArgs,
+        currentAddr,
+        labels,
+        constants,
+      );
       if (result.error) {
         errors.push({ line: lineNum, message: result.error });
       }
-      words.push(...result.words.map((w) => w & 0xFFFF));
+      words.push(...result.words.map((w) => w & 0xffff));
     }
   }
 
