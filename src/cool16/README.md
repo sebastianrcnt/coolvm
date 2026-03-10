@@ -66,7 +66,7 @@ TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개
 - **I 형식**: `op(4) rd(3) rs1(3) imm6(6)`
 - **M 형식**: `op(4) reg(3) base(3) imm6(6)`
 - **B 형식**: `op(4) rs1(3) rs2(3) imm6(6)`
-- **J 형식**: `op(4) imm12(12)`
+- **J 형식**: `op(4) rd(3) imm9(9)`
 
 즉시값 규칙:
 
@@ -109,7 +109,8 @@ TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개
 
 - `BEQ rs1, rs2, target`
 - `BNE rs1, rs2, target`
-- `JAL target` (link는 `r7`에 저장)
+- `JAL target` (기본 link는 `r7`에 저장)
+- `JAL rd, target`
 - `JALR rd, rs1`
 
 ### 시스템

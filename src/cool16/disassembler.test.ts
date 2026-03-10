@@ -14,8 +14,8 @@ describe("disassemble", () => {
   });
 
   test("renders absolute jump targets when addr is provided", () => {
-    const instr = assemble("JAL 2").program[0];
-    expect(disassemble(instr, 0x0010)).toBe("JAL 0x0016");
+    const instr = assemble("JAL r7, 2").program[0];
+    expect(disassemble(instr, 0x0010)).toBe("JAL r7, 0x0016");
   });
 
   test("decodes system instructions", () => {

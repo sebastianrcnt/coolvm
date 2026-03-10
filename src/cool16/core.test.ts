@@ -449,9 +449,9 @@ describe("branches", () => {
 // ---------------------------------------------------------------------------
 
 describe("JAL and JALR", () => {
-  test("JAL sets r7 to return address and jumps", () => {
+  test("JAL sets selected rd to return address and jumps", () => {
     const cpu = vm(`
-      JAL  target
+      JAL  r5, target
       ADDI r1, r0, 1
     target:
       ADDI r2, r0, 2
@@ -460,7 +460,8 @@ describe("JAL and JALR", () => {
     cpu.run();
     expect(cpu.regs[1]).toBe(0); // skipped
     expect(cpu.regs[2]).toBe(2);
-    expect(cpu.regs[7]).toBe(2); // return addr = PC+2 of JAL = 0+2 = 2
+    expect(cpu.regs[5]).toBe(2); // return addr = PC+2 of JAL = 0+2 = 2
+    expect(cpu.regs[7]).toBe(0); // link is no longer hardwired to r7
   });
 
   test("JALR indirect jump", () => {
