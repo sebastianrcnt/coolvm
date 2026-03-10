@@ -33,7 +33,7 @@
 **B-type (분기):**
 
 ```
-[opcode:4][rs:2][offset:2]
+[opcode:4][offset:4]
 ```
 
 ### 명령어 세트
@@ -52,8 +52,8 @@ Opcode  이름     형식     동작
 0x8     SHR     I       rd = rd >> imm
 0x9     LD      R       rd = MEM[rs]
 0xA     ST      R       MEM[rd] = rs
-0xB     BEZ     B       if rs == 0: PC += sext(off)
-0xC     BNZ     B       if rs != 0: PC += sext(off)
+0xB     BEZ     B       if r1 == 0: PC += sext(off)
+0xC     BNZ     B       if r1 != 0: PC += sext(off)
 0xD     -       -       예약됨
 0xE     JAL     R       rd = PC+1; PC = rs  ← 함수 호출/점프
 0xF     SYS     -       시스템 콜 (halt 등)
@@ -72,7 +72,7 @@ ADDI r1, 2      ; r1 = 0x0E
 
 불편하지만, 이게 진짜 실제 RISC 설계에서 겪는 문제예요. MIPS의 LUI+ORI, RISC-V의 LUI+ADDI가 정확히 같은 이유로 존재하거든요.
 
-**"분기 범위가 너무 좁지 않아?"** — BEZ/BNZ는 2비트 오프셋만 써서 `pc+1` 기준으로 `-2..+1` 바이트만 점프해요. 너무 짧은 대가를 치르는 대신 플래그를 지우고 숨겨진 상태를 없애는 편의 선택입니다.
+**"분기 범위가 너무 좁지 않아?"** — BEZ/BNZ는 4비트 오프셋을 써서 `pc+1` 기준으로 `-8..+7` 바이트까지 점프해요. 비교 대상은 `r1`로 고정되어 있지만, `SUB r1, r2, r3`처럼 결과를 r1에 넣고 분기하면 실무적으로 충분히 씁니다.
 
 ---
 

@@ -211,15 +211,15 @@ export class Cool8 {
         break;
       }
       case Op.BEZ: {
-        const off = sext(instr & 0x3, 2);
-        if (this.regs[rs] === 0) {
+        const off = sext(instr & 0xf, 4);
+        if (this.regs[1] === 0) {
           nextPc = (nextPc + off) & 0xff;
         }
         break;
       }
       case Op.BNZ: {
-        const off = sext(instr & 0x3, 2);
-        if (this.regs[rs] !== 0) {
+        const off = sext(instr & 0xf, 4);
+        if (this.regs[1] !== 0) {
           nextPc = (nextPc + off) & 0xff;
         }
         break;

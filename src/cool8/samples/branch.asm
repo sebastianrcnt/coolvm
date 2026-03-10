@@ -14,7 +14,7 @@ SHL r2, 2
 
 # r1 <- 0
 SUB r1, r1
-BEZ r1, beq_zero
+BEZ beq_zero
 
 # r1 != 0 path: print '1'
 ADDI r2, 1
@@ -34,7 +34,7 @@ LDI r1, 3
 ADDI r1, 2
 
 # r1 != 0 path: print '2'
-BNZ r1, bnz_nonzero
+BNZ bnz_nonzero
 ADDI r2, 1
 
 bnz_nonzero:

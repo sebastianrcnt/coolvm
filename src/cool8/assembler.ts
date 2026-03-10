@@ -50,6 +50,11 @@ function toSigned2(value: number): number {
   return masked;
 }
 
+function toSigned4(value: number): number {
+  if (value < -8 || value > 7) return Number.NaN;
+  return value & 0xf;
+}
+
 function encodeR(op: number, rd: number, rs: number): number {
   return (op << 4) | ((rd & 3) << 2) | (rs & 3);
 }
@@ -58,8 +63,8 @@ function encodeI(op: number, rd: number, imm: number): number {
   return (op << 4) | ((rd & 3) << 2) | (imm & 3);
 }
 
-function encodeB(op: number, rs: number, off: number): number {
-  return (op << 4) | ((rs & 3) << 2) | (off & 0x3);
+function encodeB(op: number, off: number): number {
+  return (op << 4) | (off & 0xf);
 }
 
 function resolveImmediate(
@@ -80,7 +85,12 @@ function resolveImmediate(
 
 function parseStringLiteral(token: string): number[] | null {
   const inner = token.trim();
-  if (!inner.startsWith('"') || !inner.endsWith('"')) {
+  if (inner.length < 2) {
+    return null;
+  }
+
+  const quote = inner[0];
+  if ((quote !== '"' && quote !== "'") || inner.at(-1) !== quote) {
     return null;
   }
 
@@ -107,8 +117,8 @@ function parseStringLiteral(token: string): number[] | null {
         case "\\":
           bytes.push(92);
           break;
-        case '"':
-          bytes.push(34);
+        case quote:
+          bytes.push(quote.charCodeAt(0));
           break;
         default:
           bytes.push(next.charCodeAt(0));
@@ -193,9 +203,16 @@ export function tokenizeLine(raw: string): {
   if (argStr) {
     let current = "";
     let inQuote = false;
+    let quoteChar = "";
     for (const ch of argStr) {
-      if (ch === '"') {
-        inQuote = !inQuote;
+      if (ch === '"' || ch === "'") {
+        if (!inQuote) {
+          inQuote = true;
+          quoteChar = ch;
+        } else if (ch === quoteChar) {
+          inQuote = false;
+          quoteChar = "";
+        }
         current += ch;
       } else if (ch === "," && !inQuote) {
         if (current.trim()) {
@@ -227,7 +244,7 @@ export function assembleLine(
     const direct = resolveImmediate(token, labels, constants);
     if (direct === null) return null;
     const off = direct - (addr + 1);
-    const encoded = toSigned2(off);
+    const encoded = toSigned4(off);
     if (Number.isNaN(encoded)) return null;
     return encoded;
   };
@@ -296,15 +313,11 @@ export function assembleLine(
 
     case "BEZ":
     case "BNZ": {
-      if (args.length !== 2) return fail(`${mnemonic} expects 2 args`);
-      const rs = parseReg(args[0]);
-      const off = resolveBranch(args[1]);
-      if (rs === null) {
-        return fail("invalid register");
-      }
+      if (args.length !== 1) return fail(`${mnemonic} expects 1 arg`);
+      const off = resolveBranch(args[0]);
       if (off === null) return fail("invalid branch offset");
       const op = mnemonic === "BEZ" ? Op.BEZ : Op.BNZ;
-      return { bytes: [encodeB(op, rs, off)] };
+      return { bytes: [encodeB(op, off)] };
     }
 
     case "JAL": {

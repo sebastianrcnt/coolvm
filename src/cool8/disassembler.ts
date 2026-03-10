@@ -50,16 +50,16 @@ export function disassemble(instr: number, addr?: number): string {
     case Op.ST:
       return `ST ${reg(rd)}, ${reg(rs)}`;
     case Op.BEZ: {
-      const off = sext(instr & 0x3, 2);
-      if (addr === undefined) return `BEZ ${reg(rs)}, ${off}`;
+      const off = sext(instr & 0xf, 4);
+      if (addr === undefined) return `BEZ ${off}`;
       const target = (addr + 1 + off) & 0xff;
-      return `BEZ ${reg(rs)}, ${hex8(target)}`;
+      return `BEZ ${hex8(target)}`;
     }
     case Op.BNZ: {
-      const off = sext(instr & 0x3, 2);
-      if (addr === undefined) return `BNZ ${reg(rs)}, ${off}`;
+      const off = sext(instr & 0xf, 4);
+      if (addr === undefined) return `BNZ ${off}`;
       const target = (addr + 1 + off) & 0xff;
-      return `BNZ ${reg(rs)}, ${hex8(target)}`;
+      return `BNZ ${hex8(target)}`;
     }
     case Op.JAL:
       return `JAL ${reg(rd)}, ${reg(rs)}`;
