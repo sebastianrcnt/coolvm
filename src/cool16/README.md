@@ -42,8 +42,43 @@
 - 64KiB 바이트 주소 공간 (`0x0000`~`0xFFFF`)
 - 워드 크기 16비트
 - 리틀 엔디언
-- `LW`/`SW`는 짝수 주소 정렬 필요
+- `LW`/`SW`는 짝수 주소 정렬 필요 (위반 시 `MISALIGNED_ACCESS` 트랩)
 - `LB`/`SB`는 임의 주소 허용
+
+### 특권 모드
+
+프로세서는 두 가지 특권 모드를 지원합니다.
+
+| 모드       | STATUS.PRIV 비트 | 설명                         |
+| ---------- | ----------------- | ---------------------------- |
+| Supervisor | 1                 | 초기 모드. CSR/ERET 접근 가능 |
+| User       | 0                 | CSR/ERET 사용 시 트랩 발생    |
+
+리셋 시 Supervisor 모드로 진입하며 인터럽트는 비활성화됩니다.
+
+### CSR (Control and Status Registers)
+
+CSR 주소 공간은 6비트(0x00~0x3F, 64슬롯)입니다. 정의된 CSR은 다음과 같습니다:
+
+| 주소   | 이름      | 설명                                            |
+| ------ | --------- | ----------------------------------------------- |
+| `0x00` | `STATUS`  | 상태 레지스터                                   |
+| `0x01` | `ESTATUS` | 트랩 진입 시 이전 STATUS 백업                   |
+| `0x02` | `EPC`     | 트랩 진입 시 복귀 PC 저장                       |
+| `0x03` | `CAUSE`   | 트랩 원인 코드                                  |
+| `0x04` | `IVEC`    | 인터럽트/트랩 벡터 테이블 베이스 주소           |
+
+나머지 주소(0x05~0x3F)는 예약이며, 읽으면 0을 반환하고 쓰기는 무시됩니다.
+
+CSR 접근(`CSRR`/`CSRW`)은 **Supervisor 모드에서만** 허용됩니다. User 모드에서 시도 시 `ILLEGAL_INSTRUCTION` 트랩이 발생합니다.
+
+#### STATUS 레지스터 비트맵
+
+| 비트 | 이름   | 설명                                  |
+| ---- | ------ | ------------------------------------- |
+| 0    | `IE`   | 인터럽트 활성화 (1=활성, 0=비활성)    |
+| 1    | `PRIV` | 특권 수준 (1=Supervisor, 0=User)      |
+| 2~15 | —      | 예약 (0)                              |
 
 ### MMIO UART (기본 매핑)
 
@@ -55,6 +90,8 @@
 | `0xFF02` | `UART_RXDATA`   | byte read         | 수신 바이트 읽기 (읽으면 RX valid 클리어)                                            |
 | `0xFF04` | `UART_STATUS`   | byte read/write   | bit0 `TX_READY`(RO), bit1 `RX_VALID`(RO), bit2 `TX_IRQ_EN`(RW), bit3 `RX_IRQ_EN`(RW) |
 | `0xFF06` | `UART_BAUD_DIV` | 16-bit read/write | UART bit당 CPU cycle 수 (최소 1)                                                     |
+
+UART MMIO 영역은 `0xFF00`~`0xFF07` (8바이트)입니다. 이 범위의 읽기/쓰기는 일반 메모리가 아닌 UART 장치로 라우팅됩니다.
 
 TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개 전송에 `UART_BAUD_DIV * 10` 사이클이 필요합니다.
 
@@ -77,53 +114,208 @@ TX 지연 모델은 8N1 프레임(`10`비트/바이트)이므로, 바이트 1개
 
 ## ISA
 
+### 옵코드 맵
+
+| op (4비트) | 값     | 형식 | 명령어              |
+| ---------- | ------ | ---- | ------------------- |
+| `0x0`      | `0000` | R    | ALU (func로 구분)   |
+| `0x1`      | `0001` | I    | ADDI                |
+| `0x2`      | `0010` | I    | ANDI                |
+| `0x3`      | `0011` | I    | ORI                 |
+| `0x4`      | `0100` | I    | XORI                |
+| `0x5`      | `0101` | I    | SLLI                |
+| `0x6`      | `0110` | I    | SRLI                |
+| `0x7`      | `0111` | I    | SRAI                |
+| `0x8`      | `1000` | M    | LW                  |
+| `0x9`      | `1001` | M    | SW                  |
+| `0xA`      | `1010` | J    | JAL                 |
+| `0xB`      | `1011` | —    | SYS (sub로 구분)    |
+| `0xC`      | `1100` | M    | LB                  |
+| `0xD`      | `1101` | M    | SB                  |
+| `0xE`      | `1110` | B    | BEQ                 |
+| `0xF`      | `1111` | B    | BNE                 |
+
 ### ALU (R-format, `op=0x0`)
 
-- `ADD rd, rs1, rs2`
-- `SUB rd, rs1, rs2`
-- `AND rd, rs1, rs2`
-- `OR  rd, rs1, rs2`
-- `XOR rd, rs1, rs2`
-- `SLT rd, rs1, rs2` (signed)
-- `SLTU rd, rs1, rs2` (unsigned)
-- `JALR rd, rs1` (특수 subgroup)
+func 필드(bits 2:0)로 연산을 구분합니다:
 
-### 즉시값 ALU
+| func    | 값    | 명령어               | 동작                           |
+| ------- | ----- | -------------------- | ------------------------------ |
+| `000`   | 0     | `ADD rd, rs1, rs2`   | rd = rs1 + rs2                 |
+| `001`   | 1     | `SUB rd, rs1, rs2`   | rd = rs1 - rs2                 |
+| `010`   | 2     | `AND rd, rs1, rs2`   | rd = rs1 & rs2                 |
+| `011`   | 3     | `OR  rd, rs1, rs2`   | rd = rs1 \| rs2                |
+| `100`   | 4     | `XOR rd, rs1, rs2`   | rd = rs1 ^ rs2                 |
+| `101`   | 5     | `SLT rd, rs1, rs2`   | rd = (signed)rs1 < rs2 ? 1 : 0|
+| `110`   | 6     | `SLTU rd, rs1, rs2`  | rd = (unsigned)rs1 < rs2 ? 1:0|
+| `111`   | 7     | SPECIAL (아래 참조)  | —                              |
 
-- `ADDI rd, rs1, imm6`
-- `ANDI rd, rs1, imm6`
-- `ORI  rd, rs1, imm6`
-- `XORI rd, rs1, imm6`
-- `SLLI rd, rs1, imm6`
-- `SRLI rd, rs1, imm6`
-- `SRAI rd, rs1, imm6`
+#### SPECIAL 서브그룹 (`func=0b111`)
 
-### 메모리
+`func=0b111`일 때 `rs2` 필드로 세부 명령어를 구분합니다:
 
-- `LW rd, off(base)`
-- `SW rs, off(base)`
-- `LB rd, off(base)` (sign-extend load)
-- `SB rs, off(base)`
+| rs2     | 명령어            | 인코딩                                    | 동작                              |
+| ------- | ----------------- | ----------------------------------------- | --------------------------------- |
+| `0b111` | `JALR rd, rs1`    | `0000_ddd_sss_111_111`                    | rd = PC+2; PC = rs1               |
+
+`func=0b111`이면서 `rs2 ≠ 0b111`인 인코딩은 예약이며, `ILLEGAL_INSTRUCTION` 트랩을 발생시킵니다.
+
+### 즉시값 ALU (I-format)
+
+| 명령어                  | 즉시값 처리                       | 동작                           |
+| ----------------------- | --------------------------------- | ------------------------------ |
+| `ADDI rd, rs1, imm6`   | sign-extend 6→16                  | rd = rs1 + sext(imm6)         |
+| `ANDI rd, rs1, imm6`   | zero-extend 6→16                  | rd = rs1 & zext(imm6)         |
+| `ORI  rd, rs1, imm6`   | zero-extend 6→16                  | rd = rs1 \| zext(imm6)        |
+| `XORI rd, rs1, imm6`   | zero-extend 6→16                  | rd = rs1 ^ zext(imm6)         |
+
+#### 시프트 명령어 (I-format, 시프트량 제한)
+
+시프트 명령어는 I-format을 사용하지만, 즉시값 필드 6비트 중 **하위 4비트(bits 3:0)만 시프트량(shamt)으로 사용**합니다. 유효 범위는 0~15이며, 상위 2비트(bits 5:4)는 예약으로 **0이어야** 합니다.
+
+| 명령어                  | 동작                                  |
+| ----------------------- | ------------------------------------- |
+| `SLLI rd, rs1, shamt`   | rd = rs1 << shamt (논리 좌시프트)     |
+| `SRLI rd, rs1, shamt`   | rd = rs1 >>> shamt (논리 우시프트)    |
+| `SRAI rd, rs1, shamt`   | rd = rs1 >> shamt (산술 우시프트)     |
+
+> **주의**: shamt의 상위 2비트가 0이 아닌 인코딩은 현재 구현에서 무시되지만, 향후 버전에서 동작이 변경될 수 있으므로 어셈블러는 반드시 0을 생성해야 합니다.
+
+### 메모리 (M-format)
+
+오프셋은 6비트 sign-extend입니다. 유효 주소 = `regs[base] + sext(imm6)`.
+
+| 명령어              | 동작                                                      |
+| ------------------- | --------------------------------------------------------- |
+| `LW rd, off(base)`  | rd = mem16[addr] (짝수 정렬 필수, 위반 시 MISALIGNED 트랩)|
+| `SW rs, off(base)`  | mem16[addr] = rs (짝수 정렬 필수, 위반 시 MISALIGNED 트랩)|
+| `LB rd, off(base)`  | rd = sext(mem8[addr]) (sign-extend byte load)             |
+| `SB rs, off(base)`  | mem8[addr] = rs[7:0]                                      |
 
 ### 분기/점프
 
-- `BEQ rs1, rs2, target`
-- `BNE rs1, rs2, target`
-- `JAL target` (기본 link는 `r7`에 저장)
-- `JAL rd, target`
-- `JALR rd, rs1`
+#### BEQ / BNE (B-format, `op=0xE` / `op=0xF`)
 
-### 시스템
+인코딩: `op(4) rs1(3) rs2(3) imm6(6)`
 
-- `ECALL`, `EBREAK`, `ERET`, `FENCE`
-- `CSRR rd, csr`, `CSRW csr, rs`
+오프셋 = `sext(imm6) << 1`, 기준 PC = `PC+2`.
 
-외부 인터럽트(`CAUSE=5`)는 UART 상태/IRQ enable 조합에 따라 발생할 수 있습니다.
+분기 범위: PC+2 기준 -64 ~ +62 바이트.
 
-CLI 기본 러너(`cool16 run`)의 `ECALL` 처리:
+| 명령어                  | 조건              |
+| ----------------------- | ----------------- |
+| `BEQ rs1, rs2, target`  | rs1 == rs2        |
+| `BNE rs1, rs2, target`  | rs1 != rs2        |
 
-- `r1=0`: `putchar(r2)` 수행 후 계속 실행
+#### JAL (J-format, `op=0xA`)
+
+인코딩: `op(4) rd(3) imm9(9)`
+
+동작: `rd = PC+2; PC = PC+2 + (sext(imm9) << 1)`
+
+점프 범위: PC+2 기준 -512 ~ +510 워드(= -1024 ~ +1020 바이트).
+
+`JAL target` 구문은 기본적으로 `rd=r7`(link register)에 복귀 주소를 저장합니다.
+
+#### JALR (R-format SPECIAL, `op=0x0`, `func=0b111`, `rs2=0b111`)
+
+인코딩: `0000_ddd_sss_111_111` (16비트)
+
+동작: `rd = PC+2; PC = regs[rs1]`
+
+간접 점프/함수 호출 복귀에 사용합니다. `JALR r0, r7`은 `RET` 의사명령어에 해당합니다.
+
+### 시스템 (SYS, `op=0xB`)
+
+인코딩: `1011_sub(3)_reg(3)_csr(6)`
+
+`sub` 필드(bits 11:9)로 세부 명령어를 구분합니다:
+
+| sub     | 값  | 명령어       | 필수 조건                       | 동작                                    |
+| ------- | --- | ------------ | ------------------------------- | --------------------------------------- |
+| `000`   | 0   | `ECALL`      | reg=0, csr=0                    | 트랩 발생 (아래 참조)                   |
+| `001`   | 1   | `EBREAK`     | reg=0, csr=0                    | BREAKPOINT 트랩                         |
+| `010`   | 2   | `ERET`       | reg=0, csr=0, Supervisor 모드   | PC=EPC, STATUS=ESTATUS                  |
+| `011`   | 3   | `FENCE`      | reg=0, csr=0                    | No-op (단일 코어)                       |
+| `100`   | 4   | `CSRR rd, csr` | Supervisor 모드               | rd = CSR[csr]                           |
+| `101`   | 5   | `CSRW csr, rs` | Supervisor 모드               | CSR[csr] = regs[rs]                     |
+| `110-111`| — | —            | —                               | 예약 (ILLEGAL_INSTRUCTION)              |
+
+**예약 비트 규칙**: ECALL/EBREAK/ERET/FENCE에서 `reg`과 `csr` 필드는 반드시 0이어야 합니다. 0이 아닌 값은 `ILLEGAL_INSTRUCTION` 트랩을 발생시킵니다.
+
+**권한 규칙**: ERET/CSRR/CSRW는 Supervisor 모드에서만 실행 가능합니다. User 모드에서 실행 시 `ILLEGAL_INSTRUCTION` 트랩이 발생합니다.
+
+## 트랩 및 인터럽트
+
+### 트랩 원인 코드
+
+| 코드 | 이름                    | 유형   | 설명                                |
+| ---- | ----------------------- | ------ | ----------------------------------- |
+| 0    | `ILLEGAL_INSTRUCTION`   | 동기   | 잘못된 명령어 인코딩 또는 권한 위반 |
+| 1    | `MISALIGNED_ACCESS`     | 동기   | LW/SW 홀수 주소 접근                |
+| 2    | `ECALL_USER`            | 동기   | User 모드에서의 ECALL               |
+| 3    | `ECALL_SUPERVISOR`      | 동기   | Supervisor 모드에서의 ECALL         |
+| 4    | `BREAKPOINT`            | 동기   | EBREAK 명령어                       |
+| 5    | `EXTERNAL_INTERRUPT`    | 비동기 | UART 인터럽트                       |
+
+### 트랩 진입 시퀀스
+
+동기 트랩(예외)이 발생하면:
+
+1. `EPC` ← 현재 PC (트랩을 유발한 명령어의 주소)
+2. `ESTATUS` ← 현재 `STATUS`
+3. `STATUS.IE` ← 0 (인터럽트 비활성화)
+4. `STATUS.PRIV` ← 1 (Supervisor 모드 진입)
+5. `PC` ← `IVEC + (cause << 1)`
+
+비동기 인터럽트의 경우:
+
+1. `EPC` ← 다음 PC (인터럽트 시점의 복귀 주소, 즉 아직 실행되지 않은 명령어)
+2. 나머지는 동기 트랩과 동일
+
+### 인터럽트 벡터 테이블
+
+`IVEC` CSR은 벡터 테이블의 베이스 주소를 지정합니다. 각 트랩 원인은 `IVEC + (cause × 2)` 주소로 점프합니다.
+
+벡터 엔트리 간격이 2바이트(1워드 = 1명령어)이므로, 각 엔트리에는 실제 핸들러로의 `JAL` 명령어를 배치하는 것이 일반적입니다:
+
+```
+; 벡터 테이블 예시 (IVEC가 이 주소를 가리킨다고 가정)
+vector_table:
+  JAL illegal_handler     ; cause 0: ILLEGAL_INSTRUCTION
+  JAL misalign_handler    ; cause 1: MISALIGNED_ACCESS
+  JAL ecall_u_handler     ; cause 2: ECALL_USER
+  JAL ecall_s_handler     ; cause 3: ECALL_SUPERVISOR
+  JAL break_handler       ; cause 4: BREAKPOINT
+  JAL irq_handler         ; cause 5: EXTERNAL_INTERRUPT
+```
+
+### 인터럽트 조건
+
+외부 인터럽트(`CAUSE=5`)는 다음 조건이 **모두** 충족될 때 명령어 실행 전에 확인됩니다:
+
+1. `STATUS.IE` = 1 (인터럽트 활성화)
+2. UART에서 인터럽트 조건 발생:
+   - TX ready **이고** `TX_IRQ_EN` 비트 설정, 또는
+   - RX valid **이고** `RX_IRQ_EN` 비트 설정
+
+### 트랩 복귀 (ERET)
+
+`ERET` 실행 시:
+
+1. `PC` ← `EPC`
+2. `STATUS` ← `ESTATUS`
+
+이를 통해 트랩 이전의 특권 수준과 인터럽트 상태가 복원됩니다.
+
+## ECALL과 CLI 러너
+
+CLI 기본 러너(`cool16 run`)에서 `ECALL`은 트랩 시퀀스를 수행한 후 콜백을 호출합니다. 콜백에서의 처리:
+
+- `r1=0`: `putchar(r2)` — 문자 출력 후 실행 계속
 - 그 외(`r1=1` 포함): 프로그램 halt
+
+> **주의**: ECALL은 항상 트랩 시퀀스(EPC/ESTATUS 저장, IVEC 점프)를 먼저 수행합니다. CLI 러너의 putchar 동작에서 실행을 계속하려면, IVEC가 적절히 설정되어 있거나 콜백 내에서 PC를 직접 조정해야 합니다. 베어메탈 환경에서는 ECALL 핸들러를 벡터 테이블에 등록하여 사용합니다.
 
 ## 어셈블리 문법
 
@@ -156,18 +348,21 @@ loop:
 
 ## 지원하는 의사 명령어
 
-- `NOP` -> `ADD r0, r0, r0`
-- `MOV rd, rs` (`MV` 별칭 포함)
-- `NEG rd, rs`
-- `NOT rd, rs`
-- `RET` -> `JALR r0, r7`
-- `JR rs` -> `JALR r0, rs`
-- `J label` -> `JMP label`
-- `BEQZ rs, label` -> `BEQ rs, r0, label`
-- `BNEZ rs, label` -> `BNE rs, r0, label`
-- `SEQZ rd, rs`
-- `LI rd, imm16/label` (필요 시 여러 명령으로 확장)
-- `PUSH rs`, `POP rd`
+| 의사 명령어           | 확장                        |
+| --------------------- | --------------------------- |
+| `NOP`                 | `ADD r0, r0, r0`            |
+| `MOV rd, rs` (`MV`)  | `ADD rd, rs, r0`            |
+| `NEG rd, rs`          | `SUB rd, r0, rs`            |
+| `NOT rd, rs`          | `XORI rd, rs, 0x3F`        |
+| `RET`                 | `JALR r0, r7`               |
+| `JR rs`               | `JALR r0, rs`               |
+| `J label` (`JMP`)    | `JAL r0, label`             |
+| `BEQZ rs, label`      | `BEQ rs, r0, label`         |
+| `BNEZ rs, label`      | `BNE rs, r0, label`         |
+| `SEQZ rd, rs`         | `SLTU rd, r0, rs` (주의)    |
+| `LI rd, imm16/label`  | 필요 시 여러 명령으로 확장  |
+| `PUSH rs`             | `SW rs, 0(sp)` + `ADDI sp, sp, -2` |
+| `POP rd`              | `ADDI sp, sp, 2` + `LW rd, 0(sp)` |
 
 ## CLI 사용법
 
