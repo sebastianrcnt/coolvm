@@ -73,6 +73,89 @@ function resolveImmediate(
   return parseImm(token);
 }
 
+function parseStringLiteral(token: string): number[] | null {
+  const inner = token.trim();
+  if (!inner.startsWith('"') || !inner.endsWith('"')) {
+    return null;
+  }
+
+  const s = inner.slice(1, -1);
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "\\" && i + 1 < s.length) {
+      const next = s[i + 1];
+      switch (next) {
+        case "n":
+          bytes.push(10);
+          break;
+        case "t":
+          bytes.push(9);
+          break;
+        case "r":
+          bytes.push(13);
+          break;
+        case "0":
+          bytes.push(0);
+          break;
+        case "\\":
+          bytes.push(92);
+          break;
+        case '"':
+          bytes.push(34);
+          break;
+        default:
+          bytes.push(next.charCodeAt(0));
+      }
+      i += 2;
+      continue;
+    }
+
+    bytes.push(ch.charCodeAt(0));
+    i += 1;
+  }
+
+  return bytes;
+}
+
+function encodeDataDirective(
+  mnemonic: string,
+  args: string[],
+  labels: Map<string, number>,
+): number[] | null {
+  if (mnemonic === ".BYTE") {
+    if (args.length === 0) return null;
+    const bytes: number[] = [];
+    for (const arg of args) {
+      const value = resolveImmediate(arg, labels);
+      if (value === null) {
+        return null;
+      }
+      bytes.push(value & 0xff);
+    }
+    return bytes;
+  }
+
+  if (mnemonic === ".ASCII") {
+    if (args.length !== 1) return null;
+    return parseStringLiteral(args.join(","));
+  }
+
+  return null;
+}
+
+function dataDirectiveSize(mnemonic: string, args: string[]): number {
+  if (mnemonic === ".BYTE") {
+    return args.length;
+  }
+  if (mnemonic === ".ASCII") {
+    const bytes = parseStringLiteral(args.join(","));
+    return bytes === null ? 0 : bytes.length;
+  }
+  return 1;
+}
+
 export function tokenizeLine(raw: string): {
   label: string | null;
   mnemonic: string | null;
@@ -102,10 +185,23 @@ export function tokenizeLine(raw: string): {
 
   const args: string[] = [];
   if (argStr) {
-    for (const arg of argStr.split(",")) {
-      if (arg.trim()) {
-        args.push(arg.trim());
+    let current = "";
+    let inQuote = false;
+    for (const ch of argStr) {
+      if (ch === '"') {
+        inQuote = !inQuote;
+        current += ch;
+      } else if (ch === "," && !inQuote) {
+        if (current.trim()) {
+          args.push(current.trim());
+        }
+        current = "";
+      } else {
+        current += ch;
       }
+    }
+    if (current.trim()) {
+      args.push(current.trim());
     }
   }
 
@@ -117,8 +213,8 @@ export function assembleLine(
   args: string[],
   addr: number,
   labels: Map<string, number>,
-): { byte: number; error?: string } {
-  const fail = (message: string) => ({ byte: 0, error: message });
+): { bytes: number[]; error?: string } {
+  const fail = (message: string) => ({ bytes: [0], error: message });
 
   const resolveBranch = (token: string): number | null => {
     const direct = resolveImmediate(token, labels);
@@ -149,7 +245,7 @@ export function assembleLine(
         OR: Op.OR,
         NOR: Op.NOR,
       };
-      return { byte: encodeR(opMap[mnemonic], rd, rs) };
+      return { bytes: [encodeR(opMap[mnemonic], rd, rs)] };
     }
 
     case "LDI": {
@@ -158,7 +254,7 @@ export function assembleLine(
       const imm = resolveImmediate(args[1], labels);
       if (rd === null || imm === null) return fail("invalid operand");
       if (imm < 0 || imm > 3) return fail("LDI immediate must be 0..3");
-      return { byte: encodeI(Op.LDI, rd, imm & 3) };
+      return { bytes: [encodeI(Op.LDI, rd, imm & 3)] };
     }
 
     case "ADDI":
@@ -175,7 +271,7 @@ export function assembleLine(
       } else if (imm < 0 || imm > 3) {
         return fail(`${mnemonic} immediate must be in range 0..3`);
       }
-      return { byte: encodeI(Op[mnemonic as keyof typeof Op], rd, imm & 3) };
+      return { bytes: [encodeI(Op[mnemonic as keyof typeof Op], rd, imm & 3)] };
     }
 
     case "LD":
@@ -185,8 +281,9 @@ export function assembleLine(
       const rs = parseReg(args[1]);
       if (rd === null || rs === null) return fail("invalid register");
       return {
-        byte:
+        bytes: [
           mnemonic === "LD" ? encodeR(Op.LD, rd, rs) : encodeR(Op.ST, rd, rs),
+        ],
       };
     }
 
@@ -200,7 +297,7 @@ export function assembleLine(
       }
       if (off === null) return fail("invalid branch offset");
       const op = mnemonic === "BEZ" ? Op.BEZ : Op.BNZ;
-      return { byte: encodeB(op, rs, off) };
+      return { bytes: [encodeB(op, rs, off)] };
     }
 
     case "JAL": {
@@ -208,12 +305,12 @@ export function assembleLine(
       const rd = parseReg(args[0]);
       const rs = parseReg(args[1]);
       if (rd === null || rs === null) return fail("invalid register");
-      return { byte: encodeR(Op.JAL, rd, rs) };
+      return { bytes: [encodeR(Op.JAL, rd, rs)] };
     }
 
     case "SYS": {
       if (args.length !== 0) return fail("SYS expects 0 args");
-      return { byte: Op.SYS << 4 };
+      return { bytes: [Op.SYS << 4] };
     }
 
     default:
@@ -230,6 +327,7 @@ export function assemble(source: string): AssembleResult {
     lineNum: number;
     mnemonic: string;
     args: string[];
+    isData: boolean;
     prefix: string;
   }> = [];
 
@@ -251,27 +349,43 @@ export function assemble(source: string): AssembleResult {
     }
 
     if (mnemonic) {
+      const isData = mnemonic === ".BYTE" || mnemonic === ".ASCII";
       instructions.push({
         lineNum: i + 1,
         mnemonic,
         args,
+        isData,
         prefix: currentPrefix,
       });
-      addr += 1;
+      addr += isData ? dataDirectiveSize(mnemonic, args) : 1;
     }
   }
 
   const bytes: number[] = [];
-  for (const { lineNum, mnemonic, args, prefix } of instructions) {
+  for (const { lineNum, mnemonic, args, isData, prefix } of instructions) {
     const currentAddr = bytes.length;
     const expandedArgs = args.map((arg) =>
       arg.startsWith(".") ? `${prefix}${arg}` : arg,
     );
-    const result = assembleLine(mnemonic, expandedArgs, currentAddr, labels);
-    if (result.error) {
-      errors.push({ line: lineNum, message: result.error });
+
+    if (isData) {
+      const result = encodeDataDirective(mnemonic, expandedArgs, labels);
+      if (result === null) {
+        errors.push({
+          line: lineNum,
+          message: `invalid ${mnemonic} directive`,
+        });
+        continue;
+      }
+      bytes.push(...result);
+      continue;
     }
-    bytes.push(toU8(result.byte));
+
+    const assembled = assembleLine(mnemonic, expandedArgs, currentAddr, labels);
+    if (assembled.error) {
+      errors.push({ line: lineNum, message: assembled.error });
+    }
+    bytes.push(...assembled.bytes.map(toU8));
   }
 
   return {
